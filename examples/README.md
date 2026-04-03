@@ -6,6 +6,9 @@ This directory contains runnable examples for direct config execution and MCP-dr
 
 - `config.example.json`: generic starter config
 - `macos.dry-run.json`: macOS dry-run config for local runner testing
+- `macos.page-zoom.json`: macOS dry-run example for browser page zoom
+- `macos.maps-zoom.json`: macOS dry-run example for Google Maps zoom
+- `macos.page-scroll.json`: macOS dry-run example for visible page scroll
 - `windows.dry-run.json`: Windows dry-run config for local runner testing
 
 ## Direct Runner Examples
@@ -26,6 +29,30 @@ This writes artifacts under `.omniarc/runs/macos-dry-run-demo/` without attempti
 
 This exercises the Windows runtime path in dry-run mode and writes artifacts under `.omniarc/runs/windows-dry-run-demo/`.
 
+### macOS page zoom
+
+```bash
+.venv/bin/python -m omniarc --config examples/macos.page-zoom.json
+```
+
+Use this page zoom example when you want whole page zoom behavior in Safari. It exercises navigation plus the browser zoom hotkey path while keeping execution in dry-run mode.
+
+### macOS maps zoom
+
+```bash
+.venv/bin/python -m omniarc --config examples/macos.maps-zoom.json
+```
+
+Use this maps zoom example when you want map content zoom behavior rather than whole page zoom. It opens a Google Maps location in Safari and simulates a scroll-based zoom-in path while staying in dry-run mode.
+
+### macOS page scroll
+
+```bash
+.venv/bin/python -m omniarc --config examples/macos.page-scroll.json
+```
+
+Use this page scroll example when you want an obvious scroll down on a long document page. It opens a long Wikipedia article in Safari and sends a larger scroll action so the page visibly moves.
+
 ## MCP End-To-End Flow
 
 Start the server:
@@ -44,34 +71,23 @@ Typical tool sequence for a host client:
 6. `replay_run`
 7. `get_run_artifact`
 
-### Example `run_task` payload for macOS dry-run
+### Example `run_task` payload for macOS real run
 
 ```json
 {
-  "task": "Open Safari and navigate to example.com",
+  "task": "Open Safari and go to example.com",
   "max_steps": 3,
-  "dry_run": true,
   "artifacts_dir": ".omniarc"
 }
 ```
 
-### Example `run_task` payload for Windows dry-run
-
-```json
-{
-  "task": "Open Notepad and type a short note",
-  "max_steps": 3,
-  "dry_run": true,
-  "artifacts_dir": ".omniarc"
-}
-```
+`run_task` is macOS-first today and defaults to real execution. Add `"dry_run": true` only when you explicitly want a non-interactive dry-run. For Windows dry-run evaluation, prefer the direct config path shown above with `examples/windows.dry-run.json`.
 
 ### Example `resume_task` payload
 
 ```json
 {
   "agent_id": "macos-dry-run-demo",
-  "dry_run": true,
   "artifacts_dir": ".omniarc"
 }
 ```

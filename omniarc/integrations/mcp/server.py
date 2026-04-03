@@ -124,7 +124,7 @@ def validate_task(task: str) -> dict[str, Any]:
 def run_task(
     task: str,
     max_steps: int | None = None,
-    dry_run: bool = True,
+    dry_run: bool = False,
     artifacts_dir: str = ".omniarc",
 ) -> dict[str, Any]:
     cleaned = task.strip()
@@ -157,7 +157,7 @@ def resume_task(
     agent_id: str,
     task: str | None = None,
     max_steps: int | None = None,
-    dry_run: bool = True,
+    dry_run: bool = False,
     artifacts_dir: str = ".omniarc",
 ) -> dict[str, Any]:
     cleaned_agent_id = agent_id.strip()

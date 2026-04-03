@@ -1,0 +1,14 @@
+{
+  "runtime": {
+    "platform": "macos",
+    "dry_run": true,
+    "artifacts_dir": ".omniarc"
+  },
+  "agent": {
+    "job_id": "macos-page-zoom-demo",
+    "task": "Open Safari and go to example.com and zoom in",
+    "max_steps": 20,
+    "resume": false,
+    "agent_id": null
+  }
+}

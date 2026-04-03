@@ -1,70 +1,82 @@
 # OmniArc
 
-A Host-Neutral, Cross-Platform GUI Agent Runtime.
+macOS-first GUI agent runtime with a cross-platform architecture.
 
-OmniArc is a specialized runtime for GUI automation agents, designed to bridge the gap between high-level reasoning (LLMs) and low-level platform execution. It provides a robust, typed state machine, durable run storage, and a flexible skill system via Markdown.
+OmniArc sits between an LLM host and the desktop it needs to control. It gives agent runs a typed lifecycle, durable artifacts, platform-specific executors, and an MCP server surface that tools like Codex and OpenCode can call.
 
-## 🌟 Features
+## Why OmniArc Exists
 
-- **Typed Core State Machine**: A well-defined lifecycle (Plan → Observe → Decide → Act → Execute → Record) ensuring reliable agent behavior.
-- **Cross-Platform Runtimes**: Native support for **macOS** and **Windows**, with explicit dry-run modes for safe testing.
-- **Durable Execution**: All runs are persisted in `.omniarc/runs/`, allowing for **pause, resume, and replay**.
-- **Markdown-Based Skills**: Reusable agent instructions with YAML frontmatter for capability-based selection.
-- **MCP Integration**: First-class support for the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), compatible with Codex, OpenCode, Claude Desktop, and more.
-- **Artifact Management**: Automatic capture of screenshots, action logs, and step-by-step memory.
+Most GUI automation experiments mix planning, desktop control, and run state in one place. OmniArc separates those concerns:
 
-## 🏗️ Architecture
+- `core` handles planning, decisions, actions, and durable run state
+- `runtimes` handle platform-specific observation and execution
+- `integrations` expose the runtime through MCP and host adapters
 
-OmniArc follows a modular architecture where the `OmniArcAgent` orchestrates several specialized components:
+That makes it easier to test dry-run flows, inspect artifacts, and evolve platform support without rewriting the whole agent loop.
 
-- **Planner**: Generates initial execution strategies based on task specifications.
-- **Observer**: Captures the current system state (e.g., screenshots, accessibility trees).
-- **Brain**: Evaluates observations against the plan to make the next decision.
-- **Actor**: Translates decisions into specific platform actions (e.g., `open_app`, `type_text`, `hotkey`).
-- **Executor**: Performs the actual UI interactions via platform-specific runtimes.
-- **Memory**: Records every step for durability and future reflection.
+## Current Capabilities
 
-## 🛠️ Installation
+- Typed run lifecycle with persisted `status.json`, `checkpoint.json`, `actions.jsonl`, and `memory.jsonl`
+- macOS and Windows runtime entry points with dry-run support
+- MCP server for `run_task`, `resume_task`, `pause_task`, `inspect_run`, `replay_run`, and artifact retrieval
+- Markdown skill loading from `skills/`
+- Narrow deterministic planner coverage for browser navigation, whole-page zoom, visible page scroll, and Google Maps map-content zoom flows
+- macOS scroll support with direction, repeat count, and optional modifier keys
+
+## Quick Start
 
 ```bash
-# Create a virtual environment
 uv venv .venv
 source .venv/bin/activate
-
-# Install in editable mode
 uv pip install -e .
-
-# Run tests
-pytest -v
+uv run python -m omniarc --health-check
 ```
 
-## 🚀 Usage
-
-### Running Locally (Direct Config)
-
-Execute tasks directly using JSON configuration files:
+Run a local config directly:
 
 ```bash
 python -m omniarc --config examples/macos.dry-run.json
+python -m omniarc --config examples/macos.page-zoom.json
+python -m omniarc --config examples/macos.maps-zoom.json
+python -m omniarc --config examples/macos.page-scroll.json
+```
+
+If you want the Windows dry-run path, run:
+
+```bash
 python -m omniarc --config examples/windows.dry-run.json
 ```
 
-### Running as an MCP Server
-
-OmniArc can be used as a tool provider for any MCP-compatible host:
+## Run As An MCP Server
 
 ```bash
 python -m omniarc --serve
 ```
 
-#### Registering with Hosts
+The server exposes health, run lifecycle, replay, and artifact inspection tools over stdio MCP.
 
-**Codex:**
+`run_task` and `resume_task` now default to real execution (`dry_run=false`). Use the MCP server as a macOS-first execution path today; use direct config execution for Windows dry-run flows.
+
+## Use with Codex
+
+Register OmniArc as a local MCP server:
+
 ```bash
 codex mcp add omniarc -- python -m omniarc.integrations.mcp.server
 ```
 
-**OpenCode (`config.json`):**
+Typical task prompts that the current planner understands well:
+
+- `Open Safari and go to example.com`
+- `Open Safari and go to example.com and zoom in`
+- `Open Safari and go to en.wikipedia.org/wiki/Washington,_D.C. and scroll down`
+- `Open Safari and zoom out`
+- `Open Safari and go to google.com/maps/place/Washington and zoom in`
+
+## Use with OpenCode
+
+Add this to `config.json`:
+
 ```json
 {
   "mcp": {
@@ -77,33 +89,46 @@ codex mcp add omniarc -- python -m omniarc.integrations.mcp.server
 }
 ```
 
-## 📜 Skills System
+## Examples
 
-OmniArc uses Markdown files in `skills/` to define agent behaviors. Each skill includes YAML metadata to help the runtime select the right tool for the job:
+- `examples/macos.dry-run.json`: basic macOS dry-run flow
+- `examples/macos.page-zoom.json`: Safari navigation plus whole-page zoom
+- `examples/macos.page-scroll.json`: Safari navigation plus visible page scroll
+- `examples/macos.maps-zoom.json`: Google Maps navigation plus map-content zoom
+- `examples/windows.dry-run.json`: Windows dry-run flow
 
-```markdown
----
-name: browser-basics
-tags: [browser, navigation]
-platforms: [macos, windows]
-requires_capabilities: [screen_capture]
----
-Prefer direct address-bar navigation for known URLs...
+See `examples/README.md` for runnable example details.
+
+## Current Status
+
+OmniArc is early but usable for local evaluation.
+
+- MCP-hosted task execution is macOS-first today because `run_task` builds macOS runtime configs by default.
+- Current whole-page zoom, visible page scroll, and map-content zoom flows are macOS-first behaviors, not general cross-platform capabilities.
+- Windows currently focuses on dry-run behavior and contract coverage rather than a complete real-input backend
+- macOS has the fuller execution path today, including MCP-hosted task launches, whole-page zoom, and map-content zoom
+- Planner coverage is still phrase-based and intentionally narrow; this is not yet a general natural-language desktop agent
+- There is no visual assertion layer that proves a page or map actually zoomed after execution
+
+## Development Notes
+
+Project layout:
+
+- `omniarc/core/`: planner, brain, agent loop, models, state
+- `omniarc/runtimes/`: macOS and Windows runtime implementations
+- `omniarc/integrations/`: MCP server and host bridges
+- `examples/`: direct-run configs and demo scenarios
+- `tests/`: unit and integration coverage
+
+Useful commands:
+
+```bash
+uv run pytest -q
+uv run pytest tests/core/test_planner.py -v
+uv run pytest tests/runtimes/macos/test_executor.py -v
+uv run python -m omniarc --health-check
 ```
 
-## 📂 Project Layout
-
-- `omniarc/core/`: The central state machine and component interfaces.
-- `omniarc/runtimes/`: Platform-specific implementations (macOS, Windows).
-- `omniarc/integrations/`: MCP server and external host bridges.
-- `skills/`: Markdown-based agent instructions.
-- `examples/`: Sample configurations and dry-run demos.
-- `tests/`: Comprehensive test suite for all components.
-
-## 🤝 Contributing
-
-We welcome contributions! Please ensure all PRs include tests and adhere to the established architectural patterns.
-
-## 📄 License
+## License
 
 MIT

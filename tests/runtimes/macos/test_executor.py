@@ -3,6 +3,7 @@ import pytest
 from omniarc.core.models import Action, ActionResult
 from omniarc.runtimes.macos.executor import (
     MacOSExecutor,
+    scroll_amounts_from_params,
     scroll_delta_from_amount,
     to_pixel_point,
 )
@@ -98,3 +99,57 @@ def test_to_pixel_point_supports_0_to_1000_coordinates() -> None:
 def test_scroll_delta_from_amount_keeps_sign_direction() -> None:
     assert scroll_delta_from_amount(3) == 3
     assert scroll_delta_from_amount(-2) == -2
+
+
+def test_scroll_amounts_from_params_supports_direction_and_repeat() -> None:
+    assert scroll_amounts_from_params(
+        {"direction": "up", "amount": 2, "repeat": 3}
+    ) == [
+        2,
+        2,
+        2,
+    ]
+    assert scroll_amounts_from_params(
+        {"direction": "down", "amount": 2, "repeat": 2}
+    ) == [-2, -2]
+
+
+def test_scroll_applies_modifier_flags_and_posts_repeated_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = []
+    posted = []
+
+    class FakeQuartz:
+        kCGScrollEventUnitLine = 1
+        kCGHIDEventTap = 2
+        kCGEventFlagMaskCommand = 10
+
+        def CGEventCreateScrollWheelEvent(self, _source, _unit, _wheels, amount):
+            event = {"amount": amount}
+            created.append(event)
+            return event
+
+        def CGEventSetFlags(self, event, flags):
+            event["flags"] = flags
+
+        def CGEventPost(self, _tap, event):
+            posted.append(event.copy())
+
+    monkeypatch.setattr(
+        "omniarc.runtimes.macos.executor._load_quartz", lambda: FakeQuartz()
+    )
+
+    executor = MacOSExecutor(dry_run=False)
+    executor._scroll(
+        {"direction": "up", "amount": 1, "repeat": 2, "modifiers": ["cmd"]}
+    )
+
+    assert created == [
+        {"amount": 1, "flags": 10},
+        {"amount": 1, "flags": 10},
+    ]
+    assert posted == [
+        {"amount": 1, "flags": 10},
+        {"amount": 1, "flags": 10},
+    ]

@@ -34,6 +34,13 @@ MODIFIER_NAMES = {
     "shift": "shift",
 }
 
+MODIFIER_EVENT_FLAGS = {
+    "command": "kCGEventFlagMaskCommand",
+    "control": "kCGEventFlagMaskControl",
+    "option": "kCGEventFlagMaskAlternate",
+    "shift": "kCGEventFlagMaskShift",
+}
+
 
 def to_pixel_point(
     position: dict[str, Any], screen_width: int, screen_height: int
@@ -50,6 +57,17 @@ def to_pixel_point(
 
 def scroll_delta_from_amount(amount: int | float) -> int:
     return int(amount)
+
+
+def scroll_amounts_from_params(params: dict[str, Any]) -> list[int]:
+    amount = scroll_delta_from_amount(params.get("amount", 1))
+    direction = str(params.get("direction", "")).strip().lower()
+    if direction == "up":
+        amount = abs(amount)
+    elif direction == "down":
+        amount = -abs(amount)
+    repeat = max(1, int(params.get("repeat", 1)))
+    return [amount] * repeat
 
 
 def _load_quartz():
@@ -77,6 +95,16 @@ def _modifier_tokens(modifiers: list[str] | tuple[str, ...]) -> list[str]:
         if normalized and normalized not in tokens:
             tokens.append(normalized)
     return tokens
+
+
+def quartz_modifier_flags(quartz: Any, modifiers: list[str] | tuple[str, ...]) -> int:
+    flags = 0
+    for token in _modifier_tokens(modifiers):
+        flag_name = MODIFIER_EVENT_FLAGS.get(token)
+        if flag_name is None:
+            continue
+        flags |= int(getattr(quartz, flag_name, 0))
+    return flags
 
 
 def _escape_applescript_string(text: str) -> str:
@@ -351,11 +379,17 @@ class MacOSExecutor:
 
     def _scroll(self, params: dict[str, Any]) -> None:
         quartz = _load_quartz()
-        amount = scroll_delta_from_amount(params.get("amount", 1))
-        event = quartz.CGEventCreateScrollWheelEvent(
-            None,
-            quartz.kCGScrollEventUnitLine,
-            1,
-            amount,
-        )
-        quartz.CGEventPost(quartz.kCGHIDEventTap, event)
+        modifiers = params.get("modifiers", [])
+        if not isinstance(modifiers, list):
+            raise ValueError("modifiers must be a list")
+        flags = quartz_modifier_flags(quartz, modifiers)
+        for amount in scroll_amounts_from_params(params):
+            event = quartz.CGEventCreateScrollWheelEvent(
+                None,
+                quartz.kCGScrollEventUnitLine,
+                1,
+                amount,
+            )
+            if flags:
+                quartz.CGEventSetFlags(event, flags)
+            quartz.CGEventPost(quartz.kCGHIDEventTap, event)

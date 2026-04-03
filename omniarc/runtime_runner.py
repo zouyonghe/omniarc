@@ -114,7 +114,7 @@ def run_from_config(path: Path):
     agent = OmniArcAgent.build_for_test(
         observer=observer,
         executor=executor,
-        task=TaskSpec(task=str(agent_config.get("task", ""))),
+        task=TaskSpec(task=str(agent_config.get("task", "")), runtime=platform),
         state=state,
         should_pause=lambda: pause_requested,
     )
