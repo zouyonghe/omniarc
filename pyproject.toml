@@ -1,0 +1,23 @@
+[project]
+name = "omniarc"
+version = "0.1.0"
+description = "A Cross-Platform Agent Runtime for GUI Automation"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=1.9.0",
+    "pydantic>=2.11",
+    "pyobjc-framework-Quartz>=11.1; sys_platform == 'darwin'",
+    "PyYAML>=6.0",
+    "pytest-asyncio>=0.25",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["omniarc*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

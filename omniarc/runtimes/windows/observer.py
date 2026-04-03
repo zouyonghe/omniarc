@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+from omniarc.core.models import Observation
+
+
+def build_windows_observation(
+    *,
+    screenshot_path: str,
+    active_app: str,
+    window_title: str | None = None,
+    ui_tree: dict | None = None,
+    ocr_blocks: list[dict] | None = None,
+    platform_metadata: dict | None = None,
+) -> Observation:
+    return Observation(
+        screenshot_path=screenshot_path,
+        active_app=active_app,
+        window_title=window_title,
+        ui_tree=ui_tree,
+        ocr_blocks=ocr_blocks or [],
+        platform_metadata=platform_metadata or {},
+    )
+
+
+class WindowsObserver:
+    def __init__(self, *, artifacts_dir: Path, dry_run: bool = False) -> None:
+        self.artifacts_dir = artifacts_dir
+        self.dry_run = dry_run
+
+    async def observe(self) -> Observation:
+        screenshot_path = self._capture_screenshot()
+        active_app = self._get_active_app()
+        window_title = self._get_window_title()
+        return build_windows_observation(
+            screenshot_path=str(screenshot_path),
+            active_app=active_app,
+            window_title=window_title,
+        )
+
+    def _capture_screenshot(self) -> Path:
+        self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        target = self.artifacts_dir / "latest.png"
+        if self.dry_run:
+            target.write_bytes(b"")
+            return target
+        # Placeholder for future real Windows capture path.
+        target.write_bytes(b"")
+        return target
+
+    def _run_powershell(self, script: str) -> str:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            return ""
+        return completed.stdout.strip()
+
+    def _get_active_app(self) -> str:
+        if self.dry_run:
+            return "DryRunWindowsApp"
+        return (
+            self._run_powershell(
+                "(Get-Process | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1 -ExpandProperty ProcessName)"
+            )
+            or "UnknownWindowsApp"
+        )
+
+    def _get_window_title(self) -> str | None:
+        if self.dry_run:
+            return "DryRunWindowsWindow"
+        title = self._run_powershell(
+            "(Get-Process | Where-Object {$_.MainWindowTitle} | Select-Object -First 1 -ExpandProperty MainWindowTitle)"
+        )
+        return title or None

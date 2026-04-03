@@ -1,0 +1,14 @@
+{
+  "runtime": {
+    "platform": "macos",
+    "dry_run": true,
+    "artifacts_dir": ".omniarc"
+  },
+  "agent": {
+    "job_id": "macos-dry-run-demo",
+    "task": "Open Safari and navigate to example.com",
+    "max_steps": 3,
+    "resume": false,
+    "agent_id": null
+  }
+}

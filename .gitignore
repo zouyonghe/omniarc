@@ -1,0 +1,6 @@
+__pycache__/
+.pytest_cache/
+.venv/
+.omniarc/
+docs/plans/
+*.egg-info/
