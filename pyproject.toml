@@ -5,10 +5,15 @@ description = "A Cross-Platform Agent Runtime for GUI Automation"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "httpx>=0.27",
     "mcp>=1.9.0",
     "pydantic>=2.11",
     "pyobjc-framework-Quartz>=11.1; sys_platform == 'darwin'",
     "PyYAML>=6.0",
+]
+
+[dependency-groups]
+dev = [
     "pytest-asyncio>=0.25",
 ]
 

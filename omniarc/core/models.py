@@ -62,6 +62,14 @@ ActionKind = Literal[
     "run_powershell",
 ]
 
+FailureCategory = Literal[
+    "wrong_app",
+    "no_visible_change",
+    "page_not_loaded",
+    "element_not_found",
+    "unsupported_task",
+]
+
 
 class Action(OmniArcModel):
     kind: ActionKind
@@ -74,6 +82,29 @@ class ActionResult(OmniArcModel):
     error_message: str | None = None
     extracted_content: str | None = None
     is_done: bool = False
+
+
+VerificationStatus = Literal[
+    "progress",
+    "complete",
+    "wrong_app",
+    "no_visible_change",
+]
+
+
+class VerificationResult(OmniArcModel):
+    status: VerificationStatus
+    failure_category: FailureCategory | None = None
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+RecoveryAction = Literal["action_retry", "strategy_retry", "replan", "fail"]
+
+
+class RecoveryDecision(OmniArcModel):
+    action: RecoveryAction
+    failure_category: FailureCategory | Literal["retry_budget_exhausted"] | None = None
+    reason: str = ""
 
 
 class MemoryEntry(OmniArcModel):

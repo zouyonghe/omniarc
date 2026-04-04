@@ -9,6 +9,8 @@ This directory contains runnable examples for direct config execution and MCP-dr
 - `macos.page-zoom.json`: macOS dry-run example for browser page zoom
 - `macos.maps-zoom.json`: macOS dry-run example for Google Maps zoom
 - `macos.page-scroll.json`: macOS dry-run example for visible page scroll
+- `llm_endpoints.example.json`: example internal LLM provider configuration
+- `llm_endpoints.json`: local gitignored copy of the provider config with your real credentials
 - `windows.dry-run.json`: Windows dry-run config for local runner testing
 
 ## Direct Runner Examples
@@ -82,6 +84,19 @@ Typical tool sequence for a host client:
 ```
 
 `run_task` is macOS-first today and defaults to real execution. Add `"dry_run": true` only when you explicitly want a non-interactive dry-run. For Windows dry-run evaluation, prefer the direct config path shown above with `examples/windows.dry-run.json`.
+
+To enable internal LLM fallback and the `fast-verified` profile, copy `examples/llm_endpoints.example.json` to `examples/llm_endpoints.json`, fill in your real provider details there, and point MCP calls at that local ignored file with `llm_config_path`. The template now shows the distinct `openai` provider shape; `openai_compatible` remains supported for compatible backends.
+
+Example:
+
+```json
+{
+  "task": "Open Safari, go to YouTube, and search for asmr",
+  "llm_config_path": "examples/llm_endpoints.json",
+  "llm_profile": "fast-verified",
+  "artifacts_dir": ".omniarc"
+}
+```
 
 ### Example `resume_task` payload
 

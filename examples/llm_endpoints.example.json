@@ -1,0 +1,28 @@
+{
+  "endpoints": [
+    {
+      "name": "openai-primary",
+      "provider": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "model": "gpt-5.4",
+      "priority": 1,
+      "enabled": true,
+      "timeout": 60
+    },
+    {
+      "name": "anthropic-backup",
+      "provider": "anthropic",
+      "base_url": "https://api.anthropic.com",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "model": "claude-3-5-sonnet",
+      "priority": 2,
+      "enabled": true,
+      "timeout": 60
+    }
+  ],
+  "roles": {
+    "planner": {"endpoint": "openai-primary"},
+    "verifier": {"endpoint": "anthropic-backup"}
+  }
+}

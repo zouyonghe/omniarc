@@ -2,6 +2,8 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 from omniarc.integrations.mcp.server import (
     get_run_artifact,
     get_task_status,
@@ -29,6 +31,42 @@ def test_get_run_artifact_lists_directories_and_binary_metadata(tmp_path: Path) 
     assert binary["size"] == 6
 
 
+def test_get_run_artifact_rejects_path_traversal(tmp_path: Path) -> None:
+    artifacts_dir = tmp_path / ".omniarc"
+    run_paths = ensure_run_paths(artifacts_dir, "job-artifacts")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+
+    result = get_run_artifact(
+        "job-artifacts",
+        "../outside.txt",
+        artifacts_dir=str(artifacts_dir),
+    )
+
+    assert result == {
+        "status": "error",
+        "error": "relative_path escapes run directory",
+    }
+
+
+def test_get_run_artifact_rejects_sibling_prefix_traversal(tmp_path: Path) -> None:
+    artifacts_dir = tmp_path / ".omniarc"
+    ensure_run_paths(artifacts_dir, "job")
+    sibling_run = ensure_run_paths(artifacts_dir, "job-evil")
+    (sibling_run.root / "secret.txt").write_text("secret", encoding="utf-8")
+
+    result = get_run_artifact(
+        "job",
+        "../job-evil/secret.txt",
+        artifacts_dir=str(artifacts_dir),
+    )
+
+    assert result == {
+        "status": "error",
+        "error": "relative_path escapes run directory",
+    }
+
+
 def test_resume_task_reuses_existing_job_checkpoint(tmp_path: Path) -> None:
     artifacts_dir = tmp_path / ".omniarc"
     run_paths = ensure_run_paths(artifacts_dir, "job-resume")
@@ -43,7 +81,7 @@ def test_resume_task_reuses_existing_job_checkpoint(tmp_path: Path) -> None:
                 },
                 "agent": {
                     "job_id": "job-resume",
-                    "task": "Resume this task",
+                    "task": "Open Finder",
                     "max_steps": 1,
                 },
             }
@@ -52,7 +90,7 @@ def test_resume_task_reuses_existing_job_checkpoint(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (run_paths.root / "task.json").write_text(
-        json.dumps({"task": "Resume this task"}) + "\n",
+        json.dumps({"task": "Open Finder"}) + "\n",
         encoding="utf-8",
     )
     (run_paths.root / "checkpoint.json").write_text(
@@ -99,10 +137,16 @@ def test_resume_task_reuses_existing_job_checkpoint(tmp_path: Path) -> None:
     assert status["current_step"] == 4
 
 
-def test_resume_task_defaults_to_real_run_config(tmp_path: Path) -> None:
+def test_resume_task_defaults_to_real_run_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     artifacts_dir = tmp_path / ".omniarc"
     run_paths = ensure_run_paths(artifacts_dir, "job-resume-default")
     runtime_config_path = run_paths.root / "runtime_config.json"
+    monkeypatch.setattr(
+        "omniarc.integrations.mcp.server.spawn_job",
+        lambda command, *, workdir: 4242,
+    )
     runtime_config_path.write_text(
         json.dumps(
             {
@@ -113,8 +157,8 @@ def test_resume_task_defaults_to_real_run_config(tmp_path: Path) -> None:
                 },
                 "agent": {
                     "job_id": "job-resume-default",
-                    "task": "Resume this task",
-                    "max_steps": 1,
+                    "task": "Open Finder",
+                    "max_steps": 3,
                 },
             }
         )
@@ -161,3 +205,38 @@ def test_resume_task_defaults_to_real_run_config(tmp_path: Path) -> None:
         )
     )
     assert resumed_runtime_config["runtime"]["dry_run"] is False
+
+
+def test_resume_task_rejects_unsupported_phrase_before_queueing(tmp_path: Path) -> None:
+    artifacts_dir = tmp_path / ".omniarc"
+    run_paths = ensure_run_paths(artifacts_dir, "job-resume-unsupported")
+    runtime_config_path = run_paths.root / "runtime_config.json"
+    runtime_config_path.write_text(
+        json.dumps(
+            {
+                "runtime": {
+                    "platform": "macos",
+                    "dry_run": False,
+                    "artifacts_dir": str(artifacts_dir),
+                },
+                "agent": {
+                    "job_id": "job-resume-unsupported",
+                    "task": "Open Finder",
+                    "max_steps": 3,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = resume_task(
+        "job-resume-unsupported",
+        task="Open Safari and go to YouTube and search for asmr",
+        artifacts_dir=str(artifacts_dir),
+    )
+
+    assert result == {
+        "status": "error",
+        "error": "task is not supported by the current planner",
+    }

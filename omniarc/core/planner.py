@@ -21,12 +21,45 @@ MAP_FOCUS_Y = 500
 
 
 class Planner:
+    UNSUPPORTED_BROWSER_CHAIN_MARKERS = (
+        " and search ",
+        " then search ",
+        ", search ",
+        " and click ",
+        " then click ",
+        " and type ",
+        " then type ",
+        " and press ",
+        " then press ",
+        " and drag ",
+        " then drag ",
+    )
+
+    def plan_sync(self, task: TaskSpec) -> dict[str, Any]:
+        text = task.task.strip()
+        lowered = text.lower()
+        return self._plan_impl(task, text, lowered)
+
+    def _supported_plan(
+        self, task: TaskSpec, steps: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        return {"summary": task.task, "status": "supported", "steps": steps}
+
+    def _unsupported_plan(self, task: TaskSpec) -> dict[str, Any]:
+        return {"summary": task.task, "status": "unsupported_task", "steps": []}
+
     def _extract_destination(
         self, text: str, lowered: str, prefix: str, suffix: str
     ) -> str | None:
         if not lowered.startswith(prefix) or not lowered.endswith(suffix):
             return None
         return text[len(prefix) : -len(suffix)].strip()
+
+    def _has_unparsed_browser_suffix(self, destination: str) -> bool:
+        lowered = destination.lower()
+        return any(
+            marker in lowered for marker in self.UNSUPPORTED_BROWSER_CHAIN_MARKERS
+        )
 
     def _browser_entry_steps(self) -> list[dict[str, Any]]:
         return [
@@ -92,109 +125,109 @@ class Planner:
             {"kind": "done", "params": {}},
         ]
 
-    async def plan(self, task: TaskSpec) -> dict[str, Any]:
-        text = task.task.strip()
-        lowered = text.lower()
+    def _plan_impl(self, task: TaskSpec, text: str, lowered: str) -> dict[str, Any]:
         for prefix in ("open safari and go to ", "go to "):
             destination = self._extract_destination(
                 text, lowered, prefix, " and zoom in"
             )
             if destination is not None:
+                if self._has_unparsed_browser_suffix(destination):
+                    return self._unsupported_plan(task)
                 if "google.com/maps/" in destination.lower():
-                    return {
-                        "summary": task.task,
-                        "steps": self._destination_steps(destination)
-                        + self._map_zoom_steps(),
-                    }
-                return {
-                    "summary": task.task,
-                    "steps": self._destination_steps(destination)
-                    + self._page_zoom_steps("in"),
-                }
+                    return self._supported_plan(
+                        task,
+                        self._destination_steps(destination) + self._map_zoom_steps(),
+                    )
+                return self._supported_plan(
+                    task,
+                    self._destination_steps(destination) + self._page_zoom_steps("in"),
+                )
             destination = self._extract_destination(
                 text, lowered, prefix, " and zoom out"
             )
             if destination is not None:
-                return {
-                    "summary": task.task,
-                    "steps": self._destination_steps(destination)
-                    + self._page_zoom_steps("out"),
-                }
+                if self._has_unparsed_browser_suffix(destination):
+                    return self._unsupported_plan(task)
+                return self._supported_plan(
+                    task,
+                    self._destination_steps(destination) + self._page_zoom_steps("out"),
+                )
             destination = self._extract_destination(
                 text, lowered, prefix, " and scroll down"
             )
             if destination is not None:
-                return {
-                    "summary": task.task,
-                    "steps": self._destination_steps(destination)
+                if self._has_unparsed_browser_suffix(destination):
+                    return self._unsupported_plan(task)
+                return self._supported_plan(
+                    task,
+                    self._destination_steps(destination)
                     + self._page_scroll_steps("down"),
-                }
+                )
             destination = self._extract_destination(
                 text, lowered, prefix, " and scroll up"
             )
             if destination is not None:
-                return {
-                    "summary": task.task,
-                    "steps": self._destination_steps(destination)
+                if self._has_unparsed_browser_suffix(destination):
+                    return self._unsupported_plan(task)
+                return self._supported_plan(
+                    task,
+                    self._destination_steps(destination)
                     + self._page_scroll_steps("up"),
-                }
+                )
         if lowered == "open safari and zoom in":
-            return {
-                "summary": task.task,
-                "steps": [
+            return self._supported_plan(
+                task,
+                [
                     {"kind": "open_app", "params": {"name": "Safari"}},
                     {"kind": "wait", "params": {"seconds": 1}},
                 ]
                 + self._page_zoom_steps("in"),
-            }
+            )
         if lowered == "open safari and zoom out":
-            return {
-                "summary": task.task,
-                "steps": [
+            return self._supported_plan(
+                task,
+                [
                     {"kind": "open_app", "params": {"name": "Safari"}},
                     {"kind": "wait", "params": {"seconds": 1}},
                 ]
                 + self._page_zoom_steps("out"),
-            }
+            )
         if lowered == "open safari and google maps and zoom in on washington":
-            return {
-                "summary": task.task,
-                "steps": self._destination_steps(
-                    "https://google.com/maps/place/Washington"
-                )
+            return self._supported_plan(
+                task,
+                self._destination_steps("https://google.com/maps/place/Washington")
                 + self._map_zoom_steps(),
-            }
+            )
         if lowered.startswith("open safari and go to "):
-            return {
-                "summary": task.task,
-                "steps": self._destination_steps(
-                    text[len("Open Safari and go to ") :].strip()
-                )
-                + [{"kind": "done", "params": {}}],
-            }
+            destination = text[len("Open Safari and go to ") :].strip()
+            if self._has_unparsed_browser_suffix(destination):
+                return self._unsupported_plan(task)
+            return self._supported_plan(
+                task,
+                self._destination_steps(destination) + [{"kind": "done", "params": {}}],
+            )
         if lowered.startswith("open safari and search for "):
             query = text[len("Open Safari and search for ") :].strip()
-            return {
-                "summary": task.task,
-                "steps": self._browser_entry_steps()
+            return self._supported_plan(
+                task,
+                self._browser_entry_steps()
                 + [
                     {"kind": "type_text", "params": {"text": query}},
                     {"kind": "press_key", "params": {"key": "enter"}},
                     {"kind": "wait", "params": {"seconds": 1}},
                     {"kind": "done", "params": {}},
                 ],
-            }
+            )
         if lowered.startswith("open "):
             app_key = lowered[len("open ") :].strip()
             app_name = COMMON_APPS.get(app_key)
             if app_name:
                 if app_name == "Notepad" and task.runtime != "windows":
-                    return {
-                        "summary": task.task,
-                        "steps": [{"kind": "done", "params": {}}],
-                    }
-                return {"summary": task.task, "steps": self._app_launch_steps(app_name)}
-        return {
-            "summary": task.task,
-            "steps": [{"kind": "done", "params": {}}],
-        }
+                    return self._unsupported_plan(task)
+                return self._supported_plan(task, self._app_launch_steps(app_name))
+        return self._unsupported_plan(task)
+
+    async def plan(self, task: TaskSpec) -> dict[str, Any]:
+        text = task.task.strip()
+        lowered = text.lower()
+        return self._plan_impl(task, text, lowered)

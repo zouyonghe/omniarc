@@ -6,6 +6,9 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from omniarc.core.composite_planner import CompositePlanner
+from omniarc.core.models import TaskSpec
+from omniarc.core.planner import Planner
 from omniarc.core.skills.loader import load_skills
 from omniarc.integrations.mcp.bridge import build_runtime_config, write_runtime_config
 from omniarc.integrations.mcp.jobs import (
@@ -15,6 +18,9 @@ from omniarc.integrations.mcp.jobs import (
     pause_job,
     spawn_job,
 )
+from omniarc.llm.client import LLMClient
+from omniarc.llm.config import load_llm_config
+from omniarc.llm.types import ConfigurationError
 from omniarc.storage.runs import ensure_run_paths
 from omniarc.storage.status import read_jsonl, read_status, write_status
 
@@ -55,6 +61,45 @@ def _runtime_config_path(job_id: str, artifacts_dir: str | Path) -> Path:
 
 def _load_json(path: Path) -> dict[str, Any]:
     return read_status(path)
+
+
+def _build_planner(
+    *,
+    runtime: str | None = None,
+    llm_config_path: str | None = None,
+    llm_profile: str | None = None,
+) -> CompositePlanner:
+    resolved_profile = llm_profile or (
+        "fast-verified" if llm_config_path else None
+    )
+    if resolved_profile not in {None, "", "fast-verified"}:
+        raise ConfigurationError(f"unsupported llm profile: {resolved_profile}")
+    llm_client = None
+    if llm_config_path and resolved_profile == "fast-verified":
+        llm_client = LLMClient(load_llm_config(llm_config_path))
+    return CompositePlanner(rule_planner=Planner(), llm_client=llm_client)
+
+
+def _validate_supported_task(
+    task: str,
+    runtime: str | None = None,
+    llm_config_path: str | None = None,
+    llm_profile: str | None = None,
+) -> dict[str, Any]:
+    cleaned = task.strip()
+    if not cleaned:
+        return {"valid": False, "error": "task must not be empty"}
+    try:
+        plan = _build_planner(
+            runtime=runtime,
+            llm_config_path=llm_config_path,
+            llm_profile=llm_profile,
+        ).plan_sync(TaskSpec(task=cleaned, runtime=runtime))
+    except ConfigurationError as exc:
+        return {"valid": False, "error": str(exc)}
+    if plan.get("status") == "unsupported_task":
+        return {"valid": False, "error": "task is not supported by the current planner"}
+    return {"valid": True, "error": None}
 
 
 def _launch_job(
@@ -112,12 +157,18 @@ def list_skills(skills_dir: str = "skills") -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def validate_task(task: str) -> dict[str, Any]:
-    cleaned = task.strip()
-    return {
-        "valid": bool(cleaned),
-        "error": None if cleaned else "task must not be empty",
-    }
+def validate_task(
+    task: str,
+    runtime: str | None = None,
+    llm_config_path: str | None = None,
+    llm_profile: str | None = None,
+) -> dict[str, Any]:
+    return _validate_supported_task(
+        task,
+        runtime=runtime,
+        llm_config_path=llm_config_path,
+        llm_profile=llm_profile,
+    )
 
 
 @mcp.tool()
@@ -126,10 +177,18 @@ def run_task(
     max_steps: int | None = None,
     dry_run: bool = False,
     artifacts_dir: str = ".omniarc",
+    llm_config_path: str | None = None,
+    llm_profile: str | None = None,
 ) -> dict[str, Any]:
+    validation = _validate_supported_task(
+        task,
+        runtime="macos",
+        llm_config_path=llm_config_path,
+        llm_profile=llm_profile,
+    )
+    if not validation["valid"]:
+        return {"status": "error", "error": validation["error"]}
     cleaned = task.strip()
-    if not cleaned:
-        return {"status": "error", "error": "task must not be empty"}
 
     job_id = generate_job_id()
     artifacts_root = Path(artifacts_dir)
@@ -146,6 +205,8 @@ def run_task(
         max_steps=max_steps,
         resume=False,
         agent_id=None,
+        llm_config_path=llm_config_path,
+        llm_profile=llm_profile,
     )
     return _launch_job(
         job_id=job_id, runtime_config=runtime_config, artifacts_root=artifacts_root
@@ -159,6 +220,8 @@ def resume_task(
     max_steps: int | None = None,
     dry_run: bool = False,
     artifacts_dir: str = ".omniarc",
+    llm_config_path: str | None = None,
+    llm_profile: str | None = None,
 ) -> dict[str, Any]:
     cleaned_agent_id = agent_id.strip()
     if not cleaned_agent_id:
@@ -185,7 +248,17 @@ def resume_task(
         max_steps=max_steps,
         resume=True,
         agent_id=cleaned_agent_id,
+        llm_config_path=llm_config_path,
+        llm_profile=llm_profile,
     )
+    validation = _validate_supported_task(
+        runtime_config.get("agent", {}).get("task", ""),
+        runtime=runtime_config.get("runtime", {}).get("platform"),
+        llm_config_path=runtime_config.get("llm", {}).get("config_path"),
+        llm_profile=runtime_config.get("llm", {}).get("profile"),
+    )
+    if not validation["valid"]:
+        return {"status": "error", "error": validation["error"]}
     runtime_config.setdefault("runtime", {})["dry_run"] = dry_run
     runtime_config.setdefault("runtime", {})["artifacts_dir"] = str(artifacts_root)
     runtime_config.setdefault("agent", {})["job_id"] = cleaned_agent_id
@@ -276,8 +349,12 @@ def get_run_artifact(
     relative_path: str = "",
     artifacts_dir: str = ".omniarc",
 ) -> dict[str, Any]:
-    base = Path(artifacts_dir) / "runs" / job_id
-    target = base / relative_path if relative_path else base
+    base = (Path(artifacts_dir) / "runs" / job_id).resolve()
+    target = (base / relative_path).resolve() if relative_path else base
+    try:
+        target.relative_to(base)
+    except ValueError:
+        return {"status": "error", "error": "relative_path escapes run directory"}
     if not target.exists():
         return {"status": "missing", "path": str(target)}
     if target.is_dir():

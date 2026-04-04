@@ -82,7 +82,8 @@ async def test_planner_rejects_notepad_without_windows_runtime() -> None:
 
     plan = await planner.plan(TaskSpec(task="Open Notepad"))
 
-    assert [step["kind"] for step in plan["steps"]] == ["done"]
+    assert plan["status"] == "unsupported_task"
+    assert plan["steps"] == []
 
 
 @pytest.mark.asyncio
@@ -91,7 +92,8 @@ async def test_planner_rejects_notepad_outside_windows_runtime() -> None:
 
     plan = await planner.plan(TaskSpec(task="Open Notepad", runtime="macos"))
 
-    assert [step["kind"] for step in plan["steps"]] == ["done"]
+    assert plan["status"] == "unsupported_task"
+    assert plan["steps"] == []
 
 
 @pytest.mark.asyncio
@@ -326,6 +328,20 @@ async def test_planner_builds_navigation_then_page_scroll_down_steps() -> None:
         "kind": "scroll",
         "params": {"direction": "down", "amount": 5, "repeat": 8},
     }
+
+
+@pytest.mark.asyncio
+async def test_planner_rejects_chained_browser_phrase_in_zoom_variant() -> None:
+    planner = Planner()
+
+    plan = await planner.plan(
+        TaskSpec(
+            task="Open Safari and go to example.com and click subscribe and zoom in"
+        )
+    )
+
+    assert plan["status"] == "unsupported_task"
+    assert plan["steps"] == []
 
 
 @pytest.mark.asyncio

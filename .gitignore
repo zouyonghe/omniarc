@@ -4,3 +4,4 @@ __pycache__/
 .omniarc/
 docs/plans/
 *.egg-info/
+examples/llm_endpoints.json

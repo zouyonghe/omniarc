@@ -9,20 +9,27 @@ from omniarc.core.models import (
     MemoryEntry,
     Observation,
     OmniArcModel,
+    RecoveryDecision,
+    VerificationResult,
 )
 
 
 class RunState(OmniArcModel):
     status: str = "queued"
     current_step: int = 0
+    plan_step_index: int = 0
     consecutive_failures: int = 0
     last_observation: Observation | None = None
     last_decision: Decision | None = None
     last_actions: list[Action] = Field(default_factory=list)
     action_history: list[Action] = Field(default_factory=list)
     last_results: list[ActionResult] = Field(default_factory=list)
+    last_verification: VerificationResult | None = None
+    last_recovery: RecoveryDecision | None = None
     memory: list[MemoryEntry] = Field(default_factory=list)
     is_done: bool = False
+    action_retry_count: int = 0
+    strategy_retry_count: int = 0
 
 
 class JobStatus(OmniArcModel):

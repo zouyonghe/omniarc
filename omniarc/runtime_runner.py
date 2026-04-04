@@ -8,8 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from omniarc.core.agent import OmniArcAgent
+from omniarc.core.composite_planner import CompositePlanner
 from omniarc.core.models import TaskSpec
+from omniarc.core.planner import Planner
 from omniarc.core.state import RunState
+from omniarc.llm.client import LLMClient
+from omniarc.llm.config import load_llm_config
 from omniarc.runtimes.macos.executor import MacOSExecutor
 from omniarc.runtimes.macos.observer import MacOSObserver
 from omniarc.runtimes.windows.executor import WindowsExecutor
@@ -30,6 +34,25 @@ def _write_json(path: Path, payload: dict[str, Any]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+def _build_planner_from_config(config: dict[str, Any]) -> CompositePlanner:
+    llm_config = config.get("llm", {})
+    llm_client = None
+    config_path = (
+        llm_config.get("config_path") if isinstance(llm_config, dict) else None
+    )
+    profile = llm_config.get("profile") if isinstance(llm_config, dict) else None
+    resolved_profile = profile or ("fast-verified" if config_path else None)
+    if resolved_profile not in {None, "", "fast-verified"}:
+        raise ValueError(f"Unsupported llm profile: {resolved_profile}")
+    if (
+        isinstance(config_path, str)
+        and config_path
+        and resolved_profile == "fast-verified"
+    ):
+        llm_client = LLMClient(load_llm_config(config_path))
+    return CompositePlanner(rule_planner=Planner(), llm_client=llm_client)
 
 
 def run_from_config(path: Path):
@@ -62,9 +85,10 @@ def run_from_config(path: Path):
 
     state: RunState | None = None
     if agent_config.get("resume") and checkpoint_path.exists():
-        state = RunState.model_validate(
-            json.loads(checkpoint_path.read_text(encoding="utf-8"))
-        )
+        raw_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        state = RunState.model_validate(raw_checkpoint)
+        if "plan_step_index" not in raw_checkpoint and state.current_step > 0:
+            state.plan_step_index = max(state.current_step - 1, 0)
         resumed_from_step = state.current_step
 
     pause_requested = False
@@ -97,32 +121,90 @@ def run_from_config(path: Path):
         },
     )
 
-    if platform == "macos":
-        observer = MacOSObserver(
-            artifacts_dir=run_paths.observations,
-            dry_run=bool(runtime_config.get("dry_run", False)),
-        )
-        executor = MacOSExecutor(dry_run=bool(runtime_config.get("dry_run", False)))
-    else:
-        observer = WindowsObserver(
-            artifacts_dir=run_paths.observations,
-            dry_run=bool(runtime_config.get("dry_run", False)),
-        )
-        executor = WindowsExecutor(dry_run=bool(runtime_config.get("dry_run", False)))
+    agent = None
     starting_memory_count = len(state.memory) if state else 0
     starting_action_count = len(state.action_history) if state else 0
-    agent = OmniArcAgent.build_for_test(
-        observer=observer,
-        executor=executor,
-        task=TaskSpec(task=str(agent_config.get("task", "")), runtime=platform),
-        state=state,
-        should_pause=lambda: pause_requested,
-    )
-
     try:
+        if platform == "macos":
+            observer = MacOSObserver(
+                artifacts_dir=run_paths.observations,
+                dry_run=bool(runtime_config.get("dry_run", False)),
+            )
+            executor = MacOSExecutor(dry_run=bool(runtime_config.get("dry_run", False)))
+        else:
+            observer = WindowsObserver(
+                artifacts_dir=run_paths.observations,
+                dry_run=bool(runtime_config.get("dry_run", False)),
+            )
+            executor = WindowsExecutor(
+                dry_run=bool(runtime_config.get("dry_run", False))
+            )
+        agent = OmniArcAgent.build_for_test(
+            observer=observer,
+            executor=executor,
+            planner=_build_planner_from_config(config),
+            task=TaskSpec(task=str(agent_config.get("task", "")), runtime=platform),
+            state=state,
+            should_pause=lambda: pause_requested,
+        )
+
         state = asyncio.run(
             agent.run(max_steps=int(agent_config.get("max_steps", 100)))
         )
+    except Exception as exc:
+        if agent is not None:
+            state = agent.state
+        state = state or RunState()
+        state.status = "failed"
+        for action in state.action_history[starting_action_count:]:
+            append_jsonl(actions_path, action.model_dump(mode="json"))
+        for entry in state.memory[starting_memory_count:]:
+            append_jsonl(memory_path, entry.model_dump(mode="json"))
+        _write_json(checkpoint_path, state.model_dump(mode="json"))
+        actions_path.touch(exist_ok=True)
+        memory_path.touch(exist_ok=True)
+        write_status(
+            status_path,
+            {
+                "job_id": job_id,
+                "status": "failed",
+                "current_step": state.current_step,
+                "runtime_config_path": str(path),
+                "task_path": str(task_path),
+                "checkpoint_path": str(checkpoint_path),
+                "actions_path": str(actions_path),
+                "memory_path": str(memory_path),
+                "last_actions": [
+                    action.model_dump(mode="json") for action in state.last_actions
+                ],
+                "last_step_evaluation": (
+                    state.last_decision.step_evaluation if state.last_decision else None
+                ),
+                "next_goal": state.last_decision.next_goal
+                if state.last_decision
+                else "",
+                "last_verification": (
+                    state.last_verification.model_dump(mode="json")
+                    if state.last_verification
+                    else None
+                ),
+                "last_recovery": (
+                    state.last_recovery.model_dump(mode="json")
+                    if state.last_recovery
+                    else None
+                ),
+                "action_retry_count": state.action_retry_count,
+                "strategy_retry_count": state.strategy_retry_count,
+                "last_observation_path": (
+                    state.last_observation.screenshot_path
+                    if state.last_observation
+                    else None
+                ),
+                "error": {"type": type(exc).__name__, "message": str(exc)},
+                "updated_at": _now_iso(),
+            },
+        )
+        return state
     finally:
         signal.signal(signal.SIGUSR1, previous_usr1)
     for action in state.action_history[starting_action_count:]:
@@ -150,6 +232,18 @@ def run_from_config(path: Path):
                 state.last_decision.step_evaluation if state.last_decision else None
             ),
             "next_goal": state.last_decision.next_goal if state.last_decision else "",
+            "last_verification": (
+                state.last_verification.model_dump(mode="json")
+                if state.last_verification
+                else None
+            ),
+            "last_recovery": (
+                state.last_recovery.model_dump(mode="json")
+                if state.last_recovery
+                else None
+            ),
+            "action_retry_count": state.action_retry_count,
+            "strategy_retry_count": state.strategy_retry_count,
             "last_observation_path": (
                 state.last_observation.screenshot_path
                 if state.last_observation

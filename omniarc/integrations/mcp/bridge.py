@@ -15,6 +15,8 @@ def build_runtime_config(
     max_steps: int | None,
     resume: bool | None,
     agent_id: str | None,
+    llm_config_path: str | None = None,
+    llm_profile: str | None = None,
 ) -> dict[str, Any]:
     config = copy.deepcopy(base_config)
     agent = config.setdefault("agent", {})
@@ -26,6 +28,15 @@ def build_runtime_config(
         agent["resume"] = bool(resume)
     if agent_id is not None:
         agent["agent_id"] = agent_id
+    if llm_config_path is not None or llm_profile is not None:
+        llm = config.setdefault("llm", {})
+        if llm_config_path is not None:
+            llm["config_path"] = llm_config_path
+        if llm_profile is not None:
+            llm["profile"] = llm_profile
+    llm = config.get("llm")
+    if isinstance(llm, dict) and llm.get("config_path") and not llm.get("profile"):
+        llm["profile"] = "fast-verified"
     return config
 
 
