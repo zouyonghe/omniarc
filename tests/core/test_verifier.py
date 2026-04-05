@@ -10,12 +10,14 @@ def _observation(
     active_app: str,
     window_title: str | None = None,
     ocr_texts: list[str] | None = None,
+    platform_metadata: dict | None = None,
 ) -> Observation:
     return Observation(
         screenshot_path=screenshot_path,
         active_app=active_app,
         window_title=window_title,
         ocr_blocks=[{"text": text} for text in (ocr_texts or [])],
+        platform_metadata=platform_metadata or {},
     )
 
 
@@ -110,6 +112,37 @@ def test_verifier_reports_step_complete_for_wait_action() -> None:
         status="step_complete",
         failure_category=None,
         evidence={"matched_app": "Finder"},
+    )
+
+
+def test_verifier_does_not_treat_same_latest_png_path_as_unchanged_when_hash_differs() -> (
+    None
+):
+    verifier = StepVerifier()
+    before = _observation(
+        screenshot_path="latest.png",
+        active_app="Safari",
+        window_title="Start Page",
+        platform_metadata={"screenshot_sha256": "before"},
+    )
+    after = _observation(
+        screenshot_path="latest.png",
+        active_app="Safari",
+        window_title="Start Page",
+        platform_metadata={"screenshot_sha256": "after"},
+    )
+
+    result = verifier.verify(
+        task_text="Open Safari and go to example.com",
+        actions=[Action(kind="hotkey", params={"key": "l", "modifiers": ["cmd"]})],
+        before=before,
+        after=after,
+    )
+
+    assert result == VerificationResult(
+        status="step_complete",
+        failure_category=None,
+        evidence={"matched_app": "Safari"},
     )
 
 

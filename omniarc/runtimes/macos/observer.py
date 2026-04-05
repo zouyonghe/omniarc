@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
 
@@ -38,7 +39,15 @@ class MacOSObserver:
             screenshot_path=str(screenshot_path),
             active_app=active_app,
             window_title=window_title,
+            platform_metadata=self._platform_metadata_for_screenshot(screenshot_path),
         )
+
+    def _platform_metadata_for_screenshot(self, screenshot_path: Path) -> dict:
+        try:
+            digest = hashlib.sha256(screenshot_path.read_bytes()).hexdigest()
+        except OSError:
+            return {}
+        return {"screenshot_sha256": digest}
 
     def _capture_screenshot(self) -> Path:
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)

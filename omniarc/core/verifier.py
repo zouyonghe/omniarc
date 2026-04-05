@@ -93,6 +93,13 @@ class StepVerifier:
             return None
         return title
 
+    def _same_screenshot_content(self, before: Observation, after: Observation) -> bool:
+        before_hash = before.platform_metadata.get("screenshot_sha256")
+        after_hash = after.platform_metadata.get("screenshot_sha256")
+        if before_hash and after_hash:
+            return str(before_hash) == str(after_hash)
+        return before.screenshot_path == after.screenshot_path
+
     def verify(
         self,
         *,
@@ -124,7 +131,7 @@ class StepVerifier:
 
         if before is not None:
             unchanged = (
-                before.screenshot_path == after.screenshot_path
+                self._same_screenshot_content(before, after)
                 and before.active_app == after.active_app
                 and before.window_title == after.window_title
                 and before.ocr_blocks == after.ocr_blocks
