@@ -26,6 +26,8 @@ def test_run_task_spawns_background_dry_run(tmp_path: Path) -> None:
         time.sleep(0.1)
 
     assert status["status"] == "completed"
+    assert status["planning"]["preplan_result"]["planning_mode"] == "direct"
+    assert status["planning"]["plan_bundle"]["source"] == "rule"
 
 
 def test_run_task_defaults_to_real_run_config(

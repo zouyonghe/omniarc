@@ -44,6 +44,45 @@ class Decision(OmniArcModel):
     planned_action: dict[str, Any] = Field(default_factory=dict)
 
 
+PlanningMode = Literal["direct", "search"]
+
+
+class PreplanResult(OmniArcModel):
+    planning_mode: PlanningMode = "direct"
+    search_queries: list[str] = Field(default_factory=list)
+    selected_skills: list[str] = Field(default_factory=list)
+    success_signals: list[str] = Field(default_factory=list)
+    risk_flags: list[str] = Field(default_factory=list)
+
+
+class SearchArtifact(OmniArcModel):
+    query: str
+    summary: str
+    source: str
+
+
+class PlanStep(OmniArcModel):
+    goal: str = Field(min_length=1)
+    completion_hint: str
+    allowed_actions: list[str] = Field(default_factory=list)
+    fallback_hint: str | None = None
+    planned_action: dict[str, Any] = Field(default_factory=dict)
+
+
+PlanStatus = Literal["supported", "unsupported_task"]
+PlanSource = Literal["rule", "llm", "preplan", "planner"]
+
+
+class PlanBundle(OmniArcModel):
+    summary: str
+    status: PlanStatus
+    source: PlanSource
+    preplan: PreplanResult = Field(default_factory=PreplanResult)
+    steps: list[PlanStep] = Field(default_factory=list)
+    completion_criteria: list[str] = Field(default_factory=list)
+    replan_triggers: list[str] = Field(default_factory=list)
+
+
 ActionKind = Literal[
     "click",
     "double_click",
@@ -86,6 +125,7 @@ class ActionResult(OmniArcModel):
 
 VerificationStatus = Literal[
     "progress",
+    "step_complete",
     "complete",
     "wrong_app",
     "no_visible_change",
@@ -103,7 +143,11 @@ RecoveryAction = Literal["action_retry", "strategy_retry", "replan", "fail"]
 
 class RecoveryDecision(OmniArcModel):
     action: RecoveryAction
-    failure_category: FailureCategory | Literal["retry_budget_exhausted"] | None = None
+    failure_category: (
+        FailureCategory
+        | Literal["retry_budget_exhausted", "replan_budget_exhausted"]
+        | None
+    ) = None
     reason: str = ""
 
 

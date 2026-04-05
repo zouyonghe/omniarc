@@ -3,8 +3,17 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+PLANNING_KEYS = (
+    "plan_step_index",
+    "replan_count",
+    "preplan_result",
+    "plan_bundle",
+    "search_artifacts",
+)
 
 
 def write_status(path: Path, payload: dict[str, Any]) -> Path:
@@ -48,3 +57,29 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
                 continue
             rows.append(json.loads(stripped))
     return rows
+
+
+def extract_planning_payload(
+    payload: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    planning: dict[str, Any] = {}
+    nested = payload.get("planning")
+    if isinstance(nested, Mapping):
+        planning.update(dict(nested))
+    for key in PLANNING_KEYS:
+        if key in payload and payload[key] is not None:
+            planning[key] = payload[key]
+    return planning or None
+
+
+def merge_planning_payloads(
+    *payloads: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    merged: dict[str, Any] = {}
+    for payload in payloads:
+        extracted = extract_planning_payload(payload)
+        if extracted:
+            merged.update(extracted)
+    return merged or None

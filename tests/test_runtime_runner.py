@@ -76,6 +76,13 @@ def test_run_from_config_writes_richer_status_and_artifacts(tmp_path: Path) -> N
     assert checkpoint["last_verification"]["status"] == "complete"
     assert checkpoint["action_retry_count"] == 0
     assert checkpoint["strategy_retry_count"] == 0
+    assert checkpoint["preplan_result"]["planning_mode"] == "direct"
+    assert checkpoint["plan_bundle"]["steps"][0]["goal"] == "open_app"
+    assert checkpoint["search_artifacts"] == []
+    assert checkpoint["replan_count"] == 0
+    assert status["planning"]["preplan_result"]["planning_mode"] == "direct"
+    assert status["planning"]["plan_bundle"]["steps"][0]["goal"] == "open_app"
+    assert status["planning"]["replan_count"] == 0
 
 
 def test_run_from_config_supports_windows_dry_run(tmp_path: Path) -> None:
@@ -676,6 +683,80 @@ def test_run_from_config_keeps_explicit_plan_step_index_on_resume(
     run_from_config(config_path)
 
     assert captured["plan_step_index"] == 0
+
+
+def test_run_from_config_hydrates_missing_planner_fields_on_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts_dir = tmp_path / ".omniarc"
+    run_root = artifacts_dir / "runs" / "job-old-checkpoint"
+    run_root.mkdir(parents=True, exist_ok=True)
+    config_path = tmp_path / "resume-old-config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime": {
+                    "platform": "macos",
+                    "dry_run": True,
+                    "artifacts_dir": str(artifacts_dir),
+                },
+                "agent": {
+                    "job_id": "job-old-checkpoint",
+                    "task": "Open Finder",
+                    "max_steps": 1,
+                    "resume": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_root / "checkpoint.json").write_text(
+        json.dumps(
+            {
+                "status": "paused",
+                "current_step": 2,
+                "plan_step_index": 0,
+                "memory": [],
+                "last_actions": [],
+                "last_results": [],
+                "is_done": False,
+                "consecutive_failures": 0,
+                "last_observation": None,
+                "last_decision": None,
+                "last_verification": None,
+                "last_recovery": None,
+                "action_retry_count": 0,
+                "strategy_retry_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    class CapturingAgent:
+        def __init__(self, *, state, **kwargs):
+            captured["preplan_result"] = state.preplan_result
+            captured["plan_bundle"] = state.plan_bundle
+            captured["search_artifacts"] = state.search_artifacts
+            captured["replan_count"] = state.replan_count
+            self.state = state
+
+        async def run(self, max_steps: int):
+            self.state.status = "completed"
+            return self.state
+
+    monkeypatch.setattr(
+        "omniarc.runtime_runner.OmniArcAgent.build_for_test",
+        lambda **kwargs: CapturingAgent(**kwargs),
+    )
+
+    run_from_config(config_path)
+
+    assert captured["preplan_result"] is None
+    assert captured["plan_bundle"] is None
+    assert captured["search_artifacts"] == []
+    assert captured["replan_count"] == 0
 
 
 def test_run_from_config_completes_page_zoom_example_config(tmp_path: Path) -> None:

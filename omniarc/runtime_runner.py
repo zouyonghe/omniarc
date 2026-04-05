@@ -19,7 +19,12 @@ from omniarc.runtimes.macos.observer import MacOSObserver
 from omniarc.runtimes.windows.executor import WindowsExecutor
 from omniarc.runtimes.windows.observer import WindowsObserver
 from omniarc.storage.runs import ensure_run_paths
-from omniarc.storage.status import append_jsonl, read_status, write_status
+from omniarc.storage.status import (
+    append_jsonl,
+    extract_planning_payload,
+    read_status,
+    write_status,
+)
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -53,6 +58,12 @@ def _build_planner_from_config(config: dict[str, Any]) -> CompositePlanner:
     ):
         llm_client = LLMClient(load_llm_config(config_path))
     return CompositePlanner(rule_planner=Planner(), llm_client=llm_client)
+
+
+def _planning_status_payload(state: RunState | None) -> dict[str, Any] | None:
+    if state is None:
+        return None
+    return extract_planning_payload(state.model_dump(mode="json"))
 
 
 def run_from_config(path: Path):
@@ -200,6 +211,7 @@ def run_from_config(path: Path):
                     if state.last_observation
                     else None
                 ),
+                "planning": _planning_status_payload(state),
                 "error": {"type": type(exc).__name__, "message": str(exc)},
                 "updated_at": _now_iso(),
             },
@@ -249,6 +261,7 @@ def run_from_config(path: Path):
                 if state.last_observation
                 else None
             ),
+            "planning": _planning_status_payload(state),
             "updated_at": _now_iso(),
             **({"pid": existing_status["pid"]} if "pid" in existing_status else {}),
             **(

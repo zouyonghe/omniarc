@@ -17,9 +17,9 @@ class RecoveryCoordinator:
         if verification.failure_category == "wrong_app":
             if state.strategy_retry_count >= self.strategy_retry_budget:
                 decision = RecoveryDecision(
-                    action="fail",
-                    failure_category="retry_budget_exhausted",
-                    reason="strategy retry budget is exhausted for wrong_app failures",
+                    action="replan",
+                    failure_category="wrong_app",
+                    reason="local recovery is exhausted for wrong_app failures",
                 )
                 state.last_recovery = decision
                 return decision
@@ -52,9 +52,9 @@ class RecoveryCoordinator:
                 state.last_recovery = decision
                 return decision
             decision = RecoveryDecision(
-                action="fail",
-                failure_category="retry_budget_exhausted",
-                reason="action and strategy retry budgets are exhausted",
+                action="replan",
+                failure_category="no_visible_change",
+                reason="local recovery is exhausted for the current subgoal",
             )
             state.last_recovery = decision
             return decision

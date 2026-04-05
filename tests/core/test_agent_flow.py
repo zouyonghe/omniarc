@@ -10,6 +10,8 @@ from omniarc.core.models import (
     ActionResult,
     Decision,
     Observation,
+    PlanBundle,
+    PlanStep,
     RecoveryDecision,
     TaskSpec,
     VerificationResult,
@@ -50,19 +52,19 @@ class FakeMemory:
 
 
 class StaticPlanner:
-    def __init__(self, plan: dict) -> None:
+    def __init__(self, plan) -> None:
         self._plan = plan
 
-    async def plan(self, task: TaskSpec) -> dict:
+    async def plan(self, task: TaskSpec):
         return self._plan
 
 
 class SequencedPlanner:
-    def __init__(self, plans: list[dict]) -> None:
+    def __init__(self, plans: list) -> None:
         self.plans = plans
         self.calls = 0
 
-    async def plan(self, task: TaskSpec) -> dict:
+    async def plan(self, task: TaskSpec):
         index = min(self.calls, len(self.plans) - 1)
         self.calls += 1
         return self.plans[index]
@@ -94,6 +96,12 @@ class StaticRecovery:
         return decision
 
 
+def _plan_bundle(*steps: PlanStep, summary: str = "test plan") -> PlanBundle:
+    return PlanBundle(
+        summary=summary, status="supported", source="planner", steps=list(steps)
+    )
+
+
 @pytest.mark.asyncio
 async def test_agent_reaches_completed_state_when_verifier_confirms_completion() -> (
     None
@@ -121,6 +129,147 @@ async def test_agent_reaches_completed_state_when_verifier_confirms_completion()
     assert status.status == "completed"
     assert status.last_verification is not None
     assert status.last_verification.status == "complete"
+
+
+@pytest.mark.asyncio
+async def test_agent_advances_plan_step_only_after_subgoal_completion() -> None:
+    executor = FakeExecutor(
+        [
+            [ActionResult(success=True, is_done=False)],
+            [ActionResult(success=True, is_done=False)],
+            [ActionResult(success=True, is_done=True)],
+        ]
+    )
+    agent = OmniArcAgent(
+        observer=FakeObserver(
+            [
+                Observation(screenshot_path="1.png", active_app="Finder"),
+                Observation(screenshot_path="2.png", active_app="Finder"),
+                Observation(screenshot_path="3.png", active_app="Finder"),
+                Observation(screenshot_path="4.png", active_app="Finder"),
+                Observation(screenshot_path="5.png", active_app="Finder"),
+                Observation(screenshot_path="6.png", active_app="Finder"),
+            ]
+        ),
+        executor=executor,
+        planner=StaticPlanner(
+            _plan_bundle(
+                PlanStep(
+                    goal="Open Finder",
+                    completion_hint="Finder is frontmost",
+                    allowed_actions=["open_app"],
+                    planned_action={"kind": "open_app", "params": {"name": "Finder"}},
+                ),
+                PlanStep(
+                    goal="Confirm Finder is ready",
+                    completion_hint="Task is complete",
+                    allowed_actions=["done"],
+                    planned_action={"kind": "done", "params": {}},
+                ),
+            )
+        ),
+        brain=Brain(),
+        actor=Actor(),
+        memory=FakeMemory(),
+        verifier=StaticVerifier(
+            [
+                VerificationResult(
+                    status="progress", evidence={"matched_app": "Finder"}
+                ),
+                VerificationResult(
+                    status="step_complete", evidence={"matched_app": "Finder"}
+                ),
+                VerificationResult(
+                    status="complete", evidence={"matched_app": "Finder"}
+                ),
+            ]
+        ),
+        recovery=StaticRecovery([]),
+        task=TaskSpec(task="Open Finder"),
+    )
+
+    status = await agent.run(max_steps=3)
+
+    assert status.status == "completed"
+    assert status.plan_step_index == 1
+    assert executor.executed_action_kinds == ["open_app", "open_app", "done"]
+
+
+@pytest.mark.asyncio
+async def test_agent_strategy_retry_stays_within_same_subgoal() -> None:
+    planner = SequencedPlanner(
+        [
+            _plan_bundle(
+                PlanStep(
+                    goal="Open Finder",
+                    completion_hint="Finder is frontmost",
+                    allowed_actions=["open_app"],
+                    planned_action={"kind": "open_app", "params": {"name": "Finder"}},
+                ),
+                PlanStep(
+                    goal="Finish task",
+                    completion_hint="Task is complete",
+                    allowed_actions=["done"],
+                    planned_action={"kind": "done", "params": {}},
+                ),
+            )
+        ]
+    )
+    executor = FakeExecutor(
+        [
+            [ActionResult(success=True, is_done=False)],
+            [ActionResult(success=True, is_done=False)],
+            [ActionResult(success=True, is_done=True)],
+        ]
+    )
+    agent = OmniArcAgent(
+        observer=FakeObserver(
+            [
+                Observation(screenshot_path="1.png", active_app="Finder"),
+                Observation(screenshot_path="2.png", active_app="Finder"),
+                Observation(screenshot_path="3.png", active_app="Finder"),
+                Observation(screenshot_path="4.png", active_app="Finder"),
+                Observation(screenshot_path="5.png", active_app="Finder"),
+                Observation(screenshot_path="6.png", active_app="Finder"),
+            ]
+        ),
+        executor=executor,
+        planner=planner,
+        brain=Brain(),
+        actor=Actor(),
+        memory=FakeMemory(),
+        verifier=StaticVerifier(
+            [
+                VerificationResult(
+                    status="no_visible_change",
+                    failure_category="no_visible_change",
+                    evidence={},
+                ),
+                VerificationResult(
+                    status="step_complete", evidence={"matched_app": "Finder"}
+                ),
+                VerificationResult(
+                    status="complete", evidence={"matched_app": "Finder"}
+                ),
+            ]
+        ),
+        recovery=StaticRecovery(
+            [
+                RecoveryDecision(
+                    action="strategy_retry",
+                    failure_category="no_visible_change",
+                    reason="try the same subgoal again",
+                )
+            ]
+        ),
+        task=TaskSpec(task="Open Finder"),
+    )
+
+    status = await agent.run(max_steps=3)
+
+    assert status.status == "completed"
+    assert planner.calls == 1
+    assert executor.executed_action_kinds == ["open_app", "open_app", "done"]
 
 
 @pytest.mark.asyncio
@@ -375,7 +524,7 @@ async def test_agent_resets_retry_budgets_after_verified_progress() -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_replans_when_recovery_requests_strategy_retry() -> None:
+async def test_agent_replans_when_recovery_requests_replan() -> None:
     planner = SequencedPlanner(
         [
             {
@@ -420,9 +569,9 @@ async def test_agent_replans_when_recovery_requests_strategy_retry() -> None:
         recovery=StaticRecovery(
             [
                 RecoveryDecision(
-                    action="strategy_retry",
+                    action="replan",
                     failure_category="wrong_app",
-                    reason="switch strategy",
+                    reason="switch strategy via replan",
                 )
             ]
         ),
@@ -434,6 +583,161 @@ async def test_agent_replans_when_recovery_requests_strategy_retry() -> None:
     assert status.status == "completed"
     assert planner.calls == 2
     assert executor.executed_action_kinds == ["open_app", "done"]
+
+
+@pytest.mark.asyncio
+async def test_agent_replan_restarts_from_first_subgoal_of_replacement_bundle() -> None:
+    planner = SequencedPlanner(
+        [
+            _plan_bundle(
+                PlanStep(
+                    goal="Open Finder",
+                    completion_hint="Finder is frontmost",
+                    allowed_actions=["open_app"],
+                    planned_action={"kind": "open_app", "params": {"name": "Finder"}},
+                ),
+                PlanStep(
+                    goal="Finish Finder task",
+                    completion_hint="Finder task is complete",
+                    allowed_actions=["done"],
+                    planned_action={"kind": "done", "params": {}},
+                ),
+            ),
+            _plan_bundle(
+                PlanStep(
+                    goal="Open Safari",
+                    completion_hint="Safari is frontmost",
+                    allowed_actions=["open_app"],
+                    planned_action={"kind": "open_app", "params": {"name": "Safari"}},
+                ),
+                PlanStep(
+                    goal="Finish Safari task",
+                    completion_hint="Safari task is complete",
+                    allowed_actions=["done"],
+                    planned_action={"kind": "done", "params": {}},
+                ),
+            ),
+        ]
+    )
+    executor = FakeExecutor(
+        [
+            [ActionResult(success=True, is_done=False)],
+            [ActionResult(success=True, is_done=False)],
+            [ActionResult(success=True, is_done=False)],
+            [ActionResult(success=True, is_done=True)],
+        ]
+    )
+    agent = OmniArcAgent(
+        observer=FakeObserver(
+            [
+                Observation(screenshot_path="1.png", active_app="Finder"),
+                Observation(screenshot_path="2.png", active_app="Finder"),
+                Observation(screenshot_path="3.png", active_app="Finder"),
+                Observation(screenshot_path="4.png", active_app="Finder"),
+                Observation(screenshot_path="5.png", active_app="Safari"),
+                Observation(screenshot_path="6.png", active_app="Safari"),
+                Observation(screenshot_path="7.png", active_app="Safari"),
+                Observation(screenshot_path="8.png", active_app="Safari"),
+            ]
+        ),
+        executor=executor,
+        planner=planner,
+        brain=Brain(),
+        actor=Actor(),
+        memory=FakeMemory(),
+        verifier=StaticVerifier(
+            [
+                VerificationResult(
+                    status="step_complete", evidence={"matched_app": "Finder"}
+                ),
+                VerificationResult(
+                    status="no_visible_change",
+                    failure_category="no_visible_change",
+                    evidence={},
+                ),
+                VerificationResult(
+                    status="step_complete", evidence={"matched_app": "Safari"}
+                ),
+                VerificationResult(
+                    status="complete", evidence={"matched_app": "Safari"}
+                ),
+            ]
+        ),
+        recovery=StaticRecovery(
+            [
+                RecoveryDecision(
+                    action="replan",
+                    failure_category="no_visible_change",
+                    reason="stalled subgoal",
+                )
+            ]
+        ),
+        task=TaskSpec(task="Open Finder then Safari"),
+    )
+
+    status = await agent.run(max_steps=4)
+
+    assert status.status == "completed"
+    assert planner.calls == 2
+    assert status.replan_count == 1
+    assert executor.executed_action_kinds == ["open_app", "done", "open_app", "done"]
+
+
+@pytest.mark.asyncio
+async def test_agent_fails_when_replan_budget_is_exhausted() -> None:
+    planner = SequencedPlanner(
+        [
+            _plan_bundle(
+                PlanStep(
+                    goal="Open Finder",
+                    completion_hint="Finder is frontmost",
+                    allowed_actions=["open_app"],
+                    planned_action={"kind": "open_app", "params": {"name": "Finder"}},
+                )
+            )
+        ]
+    )
+    agent = OmniArcAgent(
+        observer=FakeObserver(
+            [
+                Observation(screenshot_path="1.png", active_app="Finder"),
+                Observation(screenshot_path="2.png", active_app="Finder"),
+            ]
+        ),
+        executor=FakeExecutor([[ActionResult(success=True, is_done=False)]]),
+        planner=planner,
+        brain=Brain(),
+        actor=Actor(),
+        memory=FakeMemory(),
+        verifier=StaticVerifier(
+            [
+                VerificationResult(
+                    status="no_visible_change",
+                    failure_category="no_visible_change",
+                    evidence={},
+                )
+            ]
+        ),
+        recovery=StaticRecovery(
+            [
+                RecoveryDecision(
+                    action="replan",
+                    failure_category="no_visible_change",
+                    reason="stalled subgoal",
+                )
+            ]
+        ),
+        task=TaskSpec(task="Open Finder"),
+        state=RunState(replan_count=1),
+        max_replans=1,
+    )
+
+    status = await agent.run(max_steps=1)
+
+    assert status.status == "failed"
+    assert status.last_recovery is not None
+    assert status.last_recovery.failure_category == "replan_budget_exhausted"
+    assert planner.calls == 1
 
 
 @pytest.mark.asyncio
@@ -458,6 +762,7 @@ async def test_agent_replan_restarts_from_first_step_and_resets_retry_window() -
     )
     executor = FakeExecutor(
         [
+            [ActionResult(success=True, is_done=False)],
             [ActionResult(success=True, is_done=False)],
             [ActionResult(success=True, is_done=False)],
             [ActionResult(success=True, is_done=False)],
@@ -506,6 +811,11 @@ async def test_agent_replan_restarts_from_first_step_and_resets_retry_window() -
                     evidence={},
                 ),
                 VerificationResult(
+                    status="no_visible_change",
+                    failure_category="no_visible_change",
+                    evidence={},
+                ),
+                VerificationResult(
                     status="complete", evidence={"matched_app": "Safari"}
                 ),
             ]
@@ -514,14 +824,15 @@ async def test_agent_replan_restarts_from_first_step_and_resets_retry_window() -
         task=TaskSpec(task="Open Finder then Safari"),
     )
 
-    status = await agent.run(max_steps=5)
+    status = await agent.run(max_steps=6)
 
     assert status.status == "completed"
     assert planner.calls == 2
     assert executor.executed_action_kinds == [
         "open_app",
-        "done",
-        "done",
+        "open_app",
+        "open_app",
+        "open_app",
         "open_app",
         "open_app",
     ]
@@ -563,9 +874,9 @@ async def test_agent_fails_immediately_when_replan_returns_unsupported_task() ->
         recovery=StaticRecovery(
             [
                 RecoveryDecision(
-                    action="strategy_retry",
+                    action="replan",
                     failure_category="wrong_app",
-                    reason="switch strategy",
+                    reason="switch strategy via replan",
                 )
             ]
         ),

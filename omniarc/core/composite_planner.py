@@ -1,105 +1,97 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from pydantic import ValidationError
 
-from omniarc.core.models import Action
-from omniarc.core.models import TaskSpec
+from omniarc.core.models import PlanBundle, PlanStep, PreplanResult, TaskSpec
 from omniarc.core.planner import Planner
-from omniarc.llm.client import LLMClient
-from omniarc.llm.types import LLMRequest, ProviderError
+from omniarc.core.planner_service import PlannerService
+from omniarc.core.preplan_service import PreplanService
 
 
 class CompositePlanner:
-    LLM_PLANNER_SYSTEM_PROMPT = (
-        'Return strict JSON with this shape: {"steps": [{"kind": <action kind>, '
-        '"params": <object>}]} using only existing OmniArc action kinds.'
-    )
-
     def __init__(
         self,
         *,
         rule_planner: Planner | None = None,
-        llm_client: LLMClient | Any | None = None,
+        preplan_service: PreplanService | Any | None = None,
+        planner_service: PlannerService | Any | None = None,
+        llm_client: Any | None = None,
     ) -> None:
         self.rule_planner = rule_planner or Planner()
+        self.preplan_service = preplan_service or PreplanService()
+        self.planner_service = planner_service or PlannerService(llm_client=llm_client)
         self.llm_client = llm_client
 
-    def _unsupported(self, task: TaskSpec, source: str) -> dict[str, Any]:
-        return {
-            "summary": task.task,
-            "status": "unsupported_task",
-            "source": source,
-            "steps": [],
-        }
+    def _unsupported(
+        self, task: TaskSpec, source: str, preplan: PreplanResult | None = None
+    ) -> PlanBundle:
+        return PlanBundle(
+            summary=task.task,
+            status="unsupported_task",
+            source=source,
+            preplan=preplan or PreplanResult(),
+            steps=[],
+        )
 
-    def _supported(
-        self, task: TaskSpec, source: str, steps: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        return {
-            "summary": task.task,
-            "status": "supported",
-            "source": source,
-            "steps": steps,
-        }
+    def _normalize_rule_plan(self, task: TaskSpec, plan: dict[str, Any]) -> PlanBundle:
+        status = plan.get("status", "unsupported_task")
+        if status == "unsupported_task":
+            return self._unsupported(task, "rule")
 
-    def _llm_plan_from_content(self, task: TaskSpec, content: str) -> dict[str, Any]:
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError:
-            return self._unsupported(task, "llm")
-
-        steps = payload.get("steps")
-        if not isinstance(steps, list) or not steps:
-            return self._unsupported(task, "llm")
-
-        normalized_steps: list[dict[str, Any]] = []
-        for step in steps:
-            try:
-                normalized_steps.append(
-                    Action.model_validate(step).model_dump(mode="json")
-                )
-            except ValidationError:
-                return self._unsupported(task, "llm")
-
-        return self._supported(task, "llm", normalized_steps)
-
-    def plan_sync(self, task: TaskSpec) -> dict[str, Any]:
-        rule_plan = self.rule_planner.plan_sync(task)
-        if rule_plan.get("status") != "unsupported_task":
-            return {**rule_plan, "source": "rule"}
-        if self.llm_client is None:
-            return {**rule_plan, "source": "rule"}
-
-        try:
-            response = self.llm_client.complete_sync(
-                LLMRequest(
-                    role="planner",
-                    prompt=task.task,
-                    system_prompt=self.LLM_PLANNER_SYSTEM_PROMPT,
-                )
+        steps = [
+            PlanStep(
+                goal=str(step["kind"]),
+                completion_hint=f"Complete action {step['kind']}",
+                allowed_actions=[str(step["kind"])],
+                planned_action=dict(step),
             )
-        except ProviderError:
-            return self._unsupported(task, "llm")
-        return self._llm_plan_from_content(task, response.content)
+            for step in plan.get("steps", [])
+        ]
+        return PlanBundle(
+            summary=str(plan.get("summary", task.task)),
+            status="supported",
+            source="rule",
+            steps=steps,
+        )
 
-    async def plan(self, task: TaskSpec) -> dict[str, Any]:
-        rule_plan = await self.rule_planner.plan(task)
-        if rule_plan.get("status") != "unsupported_task":
-            return {**rule_plan, "source": "rule"}
-        if self.llm_client is None:
-            return {**rule_plan, "source": "rule"}
+    def _normalize_planner_output(self, task: TaskSpec, payload: Any) -> PlanBundle:
+        try:
+            plan = (
+                payload
+                if isinstance(payload, PlanBundle)
+                else PlanBundle.model_validate(payload)
+            )
+        except ValidationError:
+            return self._unsupported(task, "planner")
+
+        if plan.status == "unsupported_task":
+            return self._unsupported(task, plan.source, plan.preplan)
+        return plan
+
+    async def plan(self, task: TaskSpec) -> PlanBundle:
+        rule_plan = self._normalize_rule_plan(task, await self.rule_planner.plan(task))
+        if rule_plan.status != "unsupported_task":
+            return rule_plan
 
         try:
-            response = await self.llm_client.complete(
-                LLMRequest(
-                    role="planner",
-                    prompt=task.task,
-                    system_prompt=self.LLM_PLANNER_SYSTEM_PROMPT,
-                )
-            )
-        except ProviderError:
-            return self._unsupported(task, "llm")
-        return self._llm_plan_from_content(task, response.content)
+            preplan = await self.preplan_service.build(task)
+        except Exception:
+            return self._unsupported(task, "preplan")
+
+        planner_result = await self.planner_service.build(task, preplan)
+        return self._normalize_planner_output(task, planner_result)
+
+    def plan_sync(self, task: TaskSpec) -> PlanBundle:
+        rule_plan = self._normalize_rule_plan(task, self.rule_planner.plan_sync(task))
+        if rule_plan.status != "unsupported_task":
+            return rule_plan
+
+        try:
+            preplan = self.preplan_service.build_sync(task)
+        except Exception:
+            return self._unsupported(task, "preplan")
+
+        planner_result = self.planner_service.build_sync(task, preplan)
+        return self._normalize_planner_output(task, planner_result)

@@ -1,5 +1,6 @@
 import pytest
 
+from omniarc.core.models import PlanBundle, PlanStep
 from omniarc.llm.types import LLMResponse
 from omniarc.integrations.mcp.server import list_tool_names, validate_task
 
@@ -49,6 +50,38 @@ def test_validate_task_rejects_unsupported_then_search_phrase() -> None:
 
 
 def test_validate_task_accepts_supported_phrase() -> None:
+    result = validate_task("Open Finder")
+
+    assert result == {"valid": True, "error": None}
+
+
+def test_validate_task_accepts_supported_planbundle_from_rule_fast_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePlanner:
+        def plan_sync(self, task):
+            return PlanBundle(
+                summary=task.task,
+                status="supported",
+                source="rule",
+                steps=[
+                    PlanStep(
+                        goal="open_app",
+                        completion_hint="Finder is frontmost",
+                        allowed_actions=["open_app"],
+                        planned_action={
+                            "kind": "open_app",
+                            "params": {"name": "Finder"},
+                        },
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(
+        "omniarc.integrations.mcp.server._build_planner",
+        lambda runtime=None, llm_config_path=None, llm_profile=None: FakePlanner(),
+    )
+
     result = validate_task("Open Finder")
 
     assert result == {"valid": True, "error": None}

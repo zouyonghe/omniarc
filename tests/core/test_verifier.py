@@ -64,7 +64,9 @@ def test_verifier_flags_no_visible_change_when_observation_is_unchanged() -> Non
     )
 
 
-def test_verifier_reports_progress_when_expected_app_and_text_are_present() -> None:
+def test_verifier_reports_step_complete_when_expected_app_and_text_are_present() -> (
+    None
+):
     verifier = StepVerifier()
     before = _observation(screenshot_path="before.png", active_app="Codex")
     after = _observation(
@@ -82,13 +84,32 @@ def test_verifier_reports_progress_when_expected_app_and_text_are_present() -> N
     )
 
     assert result == VerificationResult(
-        status="progress",
+        status="step_complete",
         failure_category=None,
         evidence={
             "matched_text": "Example Domain",
             "matched_window_title": "Example Domain",
             "matched_app": "Safari",
         },
+    )
+
+
+def test_verifier_reports_step_complete_for_wait_action() -> None:
+    verifier = StepVerifier()
+    before = _observation(screenshot_path="before.png", active_app="Finder")
+    after = _observation(screenshot_path="after.png", active_app="Finder")
+
+    result = verifier.verify(
+        task_text="Open Finder",
+        actions=[Action(kind="wait", params={"seconds": 1})],
+        before=before,
+        after=after,
+    )
+
+    assert result == VerificationResult(
+        status="step_complete",
+        failure_category=None,
+        evidence={"matched_app": "Finder"},
     )
 
 

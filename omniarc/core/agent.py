@@ -6,10 +6,23 @@ from omniarc.core.composite_planner import CompositePlanner
 from omniarc.core.memory import Memory
 from omniarc.core.recovery import RecoveryCoordinator
 from omniarc.core.verifier import StepVerifier
-from omniarc.core.models import Decision
-from omniarc.core.models import ActionResult, TaskSpec
+from omniarc.core.models import (
+    ActionResult,
+    Decision,
+    PlanBundle,
+    RecoveryDecision,
+    TaskSpec,
+)
 from omniarc.core.planner import Planner
 from omniarc.core.state import RunState
+
+
+def _plan_status(plan: dict | PlanBundle) -> str:
+    return plan.status if isinstance(plan, PlanBundle) else str(plan.get("status"))
+
+
+def _plan_steps(plan: dict | PlanBundle) -> list:
+    return plan.steps if isinstance(plan, PlanBundle) else plan.get("steps", [])
 
 
 class OmniArcAgent:
@@ -27,6 +40,7 @@ class OmniArcAgent:
         task: TaskSpec,
         state: RunState | None = None,
         should_pause=None,
+        max_replans: int = 1,
     ) -> None:
         self.observer = observer
         self.executor = executor
@@ -39,6 +53,7 @@ class OmniArcAgent:
         self.task = task
         self.state = state or RunState()
         self.should_pause = should_pause
+        self.max_replans = max_replans
 
     @staticmethod
     def default_test_results() -> list[ActionResult]:
@@ -82,9 +97,12 @@ class OmniArcAgent:
     async def run(self, max_steps: int = 100) -> RunState:
         self.state.status = "planning"
         plan = await self.planner.plan(self.task)
-        if plan.get("status") == "unsupported_task":
+        if _plan_status(plan) == "unsupported_task":
             return self._fail_unsupported_plan()
         starting_step = self.state.current_step
+        if isinstance(plan, PlanBundle):
+            self.state.plan_bundle = plan
+            self.state.preplan_result = plan.preplan
 
         for step in range(starting_step + 1, starting_step + max_steps + 1):
             self.state.current_step = step
@@ -131,6 +149,16 @@ class OmniArcAgent:
                 self.state.status = "completed"
                 return self.state
 
+            if verification.status == "step_complete":
+                self.state.action_retry_count = 0
+                self.state.strategy_retry_count = 0
+                if self.state.plan_step_index < max(len(_plan_steps(plan)) - 1, 0):
+                    self.state.plan_step_index += 1
+                if self.should_pause and self.should_pause():
+                    self.state.status = "paused"
+                    return self.state
+                continue
+
             if verification.status == "progress":
                 self.state.action_retry_count = 0
                 self.state.strategy_retry_count = 0
@@ -145,12 +173,31 @@ class OmniArcAgent:
                         self.state.status = "paused"
                         return self.state
                     continue
-                if recovery.action in {"strategy_retry", "replan"}:
+                if recovery.action == "strategy_retry":
                     self.state.action_retry_count = 0
+                    if self.should_pause and self.should_pause():
+                        self.state.status = "paused"
+                        return self.state
+                    continue
+                if recovery.action == "replan":
+                    if self.state.replan_count >= self.max_replans:
+                        self.state.last_recovery = RecoveryDecision(
+                            action="fail",
+                            failure_category="replan_budget_exhausted",
+                            reason="replan budget is exhausted",
+                        )
+                        self.state.status = "failed"
+                        return self.state
+                    self.state.replan_count += 1
+                    self.state.action_retry_count = 0
+                    self.state.strategy_retry_count = 0
                     self.state.status = "planning"
                     plan = await self.planner.plan(self.task)
-                    if plan.get("status") == "unsupported_task":
+                    if _plan_status(plan) == "unsupported_task":
                         return self._fail_unsupported_plan()
+                    if isinstance(plan, PlanBundle):
+                        self.state.plan_bundle = plan
+                        self.state.preplan_result = plan.preplan
                     self.state.plan_step_index = 0
                     if self.should_pause and self.should_pause():
                         self.state.status = "paused"
@@ -160,8 +207,6 @@ class OmniArcAgent:
             if self.should_pause and self.should_pause():
                 self.state.status = "paused"
                 return self.state
-
-            self.state.plan_step_index += 1
 
         self.state.status = "failed"
         return self.state

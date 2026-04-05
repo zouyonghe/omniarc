@@ -22,7 +22,9 @@ def test_recovery_uses_strategy_retry_for_wrong_app() -> None:
     assert decision.failure_category == "wrong_app"
 
 
-def test_recovery_fails_after_wrong_app_strategy_budget_is_exhausted() -> None:
+def test_recovery_requests_replan_after_wrong_app_strategy_budget_is_exhausted() -> (
+    None
+):
     coordinator = RecoveryCoordinator(strategy_retry_budget=1)
     state = RunState()
 
@@ -44,8 +46,8 @@ def test_recovery_fails_after_wrong_app_strategy_budget_is_exhausted() -> None:
     )
 
     assert first.action == "strategy_retry"
-    assert second.action == "fail"
-    assert second.failure_category == "retry_budget_exhausted"
+    assert second.action == "replan"
+    assert second.failure_category == "wrong_app"
 
 
 def test_recovery_uses_action_retry_then_strategy_retry_for_no_visible_change() -> None:
@@ -73,7 +75,7 @@ def test_recovery_uses_action_retry_then_strategy_retry_for_no_visible_change() 
     assert second.action == "strategy_retry"
 
 
-def test_recovery_reports_retry_budget_exhausted_after_strategy_budget() -> None:
+def test_recovery_requests_replan_after_local_retry_budgets_are_exhausted() -> None:
     coordinator = RecoveryCoordinator(action_retry_budget=1, strategy_retry_budget=1)
     state = RunState()
 
@@ -92,6 +94,6 @@ def test_recovery_reports_retry_budget_exhausted_after_strategy_budget() -> None
     assert [outcome.action for outcome in outcomes] == [
         "action_retry",
         "strategy_retry",
-        "fail",
+        "replan",
     ]
-    assert outcomes[-1].failure_category == "retry_budget_exhausted"
+    assert outcomes[-1].failure_category == "no_visible_change"

@@ -7,7 +7,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from omniarc.core.composite_planner import CompositePlanner
-from omniarc.core.models import TaskSpec
+from omniarc.core.models import PlanBundle, TaskSpec
 from omniarc.core.planner import Planner
 from omniarc.core.skills.loader import load_skills
 from omniarc.integrations.mcp.bridge import build_runtime_config, write_runtime_config
@@ -22,7 +22,12 @@ from omniarc.llm.client import LLMClient
 from omniarc.llm.config import load_llm_config
 from omniarc.llm.types import ConfigurationError
 from omniarc.storage.runs import ensure_run_paths
-from omniarc.storage.status import read_jsonl, read_status, write_status
+from omniarc.storage.status import (
+    merge_planning_payloads,
+    read_jsonl,
+    read_status,
+    write_status,
+)
 
 TOOL_NAMES = [
     "health_check",
@@ -69,9 +74,7 @@ def _build_planner(
     llm_config_path: str | None = None,
     llm_profile: str | None = None,
 ) -> CompositePlanner:
-    resolved_profile = llm_profile or (
-        "fast-verified" if llm_config_path else None
-    )
+    resolved_profile = llm_profile or ("fast-verified" if llm_config_path else None)
     if resolved_profile not in {None, "", "fast-verified"}:
         raise ConfigurationError(f"unsupported llm profile: {resolved_profile}")
     llm_client = None
@@ -97,7 +100,8 @@ def _validate_supported_task(
         ).plan_sync(TaskSpec(task=cleaned, runtime=runtime))
     except ConfigurationError as exc:
         return {"valid": False, "error": str(exc)}
-    if plan.get("status") == "unsupported_task":
+    plan_status = plan.status if isinstance(plan, PlanBundle) else plan.get("status")
+    if plan_status == "unsupported_task":
         return {"valid": False, "error": "task is not supported by the current planner"}
     return {"valid": True, "error": None}
 
@@ -308,6 +312,7 @@ def inspect_run(job_id: str, artifacts_dir: str = ".omniarc") -> dict[str, Any]:
         "status": status,
         "task": task,
         "checkpoint": checkpoint,
+        "planning": merge_planning_payloads(status, checkpoint),
         "artifacts": artifacts,
     }
 
@@ -322,6 +327,14 @@ def replay_run(
     base = Path(artifacts_dir) / "runs" / job_id
     actions = read_jsonl(base / "actions.jsonl")
     memory = read_jsonl(base / "memory.jsonl")
+    checkpoint = (
+        _load_json(base / "checkpoint.json")
+        if (base / "checkpoint.json").exists()
+        else None
+    )
+    status = (
+        _load_json(base / "status.json") if (base / "status.json").exists() else None
+    )
     end = start + limit
     return {
         "job_id": job_id,
@@ -329,6 +342,7 @@ def replay_run(
         "limit": limit,
         "actions": actions[start:end],
         "memory": memory[start:end],
+        "planning": merge_planning_payloads(status, checkpoint),
     }
 
 

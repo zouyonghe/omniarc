@@ -108,7 +108,7 @@ class StepVerifier:
                     evidence={"mode": "dry_run", "actual_app": after.active_app},
                 )
             return VerificationResult(
-                status="progress",
+                status="step_complete",
                 evidence={"mode": "dry_run", "actual_app": after.active_app},
             )
 
@@ -164,13 +164,35 @@ class StepVerifier:
                 status="complete",
                 evidence={"matched_app": after.active_app},
             )
-        if (
-            has_browser_evidence
-            or matched_app
-            or any(action.kind == "wait" for action in actions)
-        ):
+        if any(action.kind == "done" for action in actions):
             return VerificationResult(
                 status="progress",
+                evidence={
+                    **({"matched_text": matched_text} if matched_text else {}),
+                    **(
+                        {"matched_window_title": matched_window_title}
+                        if matched_window_title
+                        else {}
+                    ),
+                    **({"matched_app": after.active_app} if matched_app else {}),
+                },
+            )
+        if any(action.kind == "wait" for action in actions):
+            return VerificationResult(
+                status="step_complete",
+                evidence={
+                    **({"matched_text": matched_text} if matched_text else {}),
+                    **(
+                        {"matched_window_title": matched_window_title}
+                        if matched_window_title
+                        else {}
+                    ),
+                    **({"matched_app": after.active_app} if matched_app else {}),
+                },
+            )
+        if has_browser_evidence or matched_app:
+            return VerificationResult(
+                status="step_complete",
                 evidence={
                     **({"matched_text": matched_text} if matched_text else {}),
                     **(

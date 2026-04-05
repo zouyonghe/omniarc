@@ -1,126 +1,197 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from omniarc.core.composite_planner import CompositePlanner
-from omniarc.core.models import TaskSpec
-from omniarc.llm.types import LLMResponse, ProviderError
+from omniarc.core.models import PlanBundle, PlanStep, PreplanResult, TaskSpec
+from omniarc.core.planner import Planner
 
 
-class FakeLLMClient:
-    def __init__(self, response: LLMResponse | None = None) -> None:
-        self.calls: list[str] = []
-        self.system_prompts: list[str | None] = []
-        self.response = response
+class UnsupportedPlanner(Planner):
+    async def plan(self, task: TaskSpec) -> dict:
+        return self._unsupported_plan(task)
 
-    async def complete(self, request):
-        self.calls.append(request.prompt)
-        self.system_prompts.append(request.system_prompt)
-        if self.response is None:
-            raise AssertionError("LLM client should not have been called")
-        return self.response
+    def plan_sync(self, task: TaskSpec) -> dict:
+        return self._unsupported_plan(task)
 
-    def complete_sync(self, request):
-        self.calls.append(request.prompt)
-        self.system_prompts.append(request.system_prompt)
-        if self.response is None:
-            raise AssertionError("LLM client should not have been called")
-        return self.response
+
+class FakePreplanService:
+    def __init__(self, result: PreplanResult | Exception) -> None:
+        self.result = result
+        self.calls: list[TaskSpec] = []
+
+    async def build(self, task: TaskSpec) -> PreplanResult:
+        self.calls.append(task)
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+    def build_sync(self, task: TaskSpec) -> PreplanResult:
+        self.calls.append(task)
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+class FakePlannerService:
+    def __init__(self, result: PlanBundle | dict) -> None:
+        self.result = result
+        self.calls: list[tuple[TaskSpec, PreplanResult]] = []
+
+    async def build(self, task: TaskSpec, preplan: PreplanResult):
+        self.calls.append((task, preplan))
+        return self.result
+
+    def build_sync(self, task: TaskSpec, preplan: PreplanResult):
+        self.calls.append((task, preplan))
+        return self.result
 
 
 @pytest.mark.asyncio
-async def test_composite_planner_uses_rule_plan_without_llm_fallback() -> None:
-    llm_client = FakeLLMClient()
-    planner = CompositePlanner(llm_client=llm_client)
+async def test_composite_planner_keeps_rule_plan_for_simple_supported_task() -> None:
+    preplan_service = FakePreplanService(PreplanResult(planning_mode="search"))
+    planner_service = FakePlannerService(
+        PlanBundle(summary="unused", status="supported", source="planner")
+    )
+    planner = CompositePlanner(
+        rule_planner=Planner(),
+        preplan_service=preplan_service,
+        planner_service=planner_service,
+    )
 
     plan = await planner.plan(TaskSpec(task="Open Finder"))
 
-    assert plan["status"] == "supported"
-    assert plan["source"] == "rule"
-    assert [step["kind"] for step in plan["steps"]] == ["open_app", "wait", "done"]
-    assert llm_client.calls == []
+    assert plan.status == "supported"
+    assert plan.source == "rule"
+    assert [step.goal for step in plan.steps] == ["open_app", "wait", "done"]
+    assert preplan_service.calls == []
+    assert planner_service.calls == []
 
 
 @pytest.mark.asyncio
-async def test_composite_planner_falls_back_to_llm_for_unsupported_task() -> None:
-    llm_client = FakeLLMClient(
-        response=LLMResponse(
-            content='{"steps": [{"kind": "open_app", "params": {"name": "Safari"}}, {"kind": "done", "params": {}}]}',
-            provider="openai_compatible",
-            model="gpt-4o",
+async def test_composite_planner_returns_plan_bundle_from_preplan_pipeline() -> None:
+    preplan_service = FakePreplanService(
+        PreplanResult(planning_mode="search", selected_skills=["search"])
+    )
+    planner_service = FakePlannerService(
+        PlanBundle(
+            summary="Research OpenAI pricing",
+            status="supported",
+            source="planner",
+            preplan=PreplanResult(planning_mode="search", selected_skills=["search"]),
+            steps=[
+                PlanStep(
+                    goal="Open browser",
+                    completion_hint="Browser is frontmost",
+                    allowed_actions=["open_app"],
+                )
+            ],
         )
     )
-    planner = CompositePlanner(llm_client=llm_client)
-
-    plan = await planner.plan(
-        TaskSpec(task="Open Safari, go to YouTube, and search for asmr")
+    planner = CompositePlanner(
+        rule_planner=UnsupportedPlanner(),
+        preplan_service=preplan_service,
+        planner_service=planner_service,
     )
 
-    assert plan["status"] == "supported"
-    assert plan["source"] == "llm"
-    assert [step["kind"] for step in plan["steps"]] == ["open_app", "done"]
-    assert llm_client.calls == ["Open Safari, go to YouTube, and search for asmr"]
-    assert llm_client.system_prompts[0] is not None
-    assert '"steps"' in llm_client.system_prompts[0]
+    plan = await planner.plan(
+        TaskSpec(task="Research OpenAI pricing", allow_search=True)
+    )
+
+    assert plan.status == "supported"
+    assert plan.source == "planner"
+    assert plan.preplan.selected_skills == ["search"]
+    assert plan.steps[0].goal == "Open browser"
 
 
 @pytest.mark.asyncio
-async def test_composite_planner_returns_unsupported_when_llm_produces_no_steps() -> (
-    None
-):
-    llm_client = FakeLLMClient(
-        response=LLMResponse(
-            content='{"steps": []}',
-            provider="openai_compatible",
-            model="gpt-4o",
-        )
-    )
-    planner = CompositePlanner(llm_client=llm_client)
-
-    plan = await planner.plan(
-        TaskSpec(task="Open Safari, go to YouTube, and search for asmr")
+async def test_composite_planner_rejects_invalid_planner_payload() -> None:
+    planner = CompositePlanner(
+        rule_planner=UnsupportedPlanner(),
+        preplan_service=FakePreplanService(PreplanResult(planning_mode="direct")),
+        planner_service=FakePlannerService(
+            {
+                "summary": "broken",
+                "status": "supported",
+                "source": "planner",
+                "steps": [{"completion_hint": "missing goal"}],
+            }
+        ),
     )
 
-    assert plan["status"] == "unsupported_task"
-    assert plan["source"] == "llm"
-    assert plan["steps"] == []
+    plan = await planner.plan(TaskSpec(task="Do a complex thing"))
+
+    assert plan.status == "unsupported_task"
+    assert plan.source == "planner"
+    assert plan.steps == []
 
 
 @pytest.mark.asyncio
-async def test_composite_planner_rejects_malformed_llm_step_shapes() -> None:
-    llm_client = FakeLLMClient(
-        response=LLMResponse(
-            content='{"steps": [{"foo": "bar"}]}',
-            provider="openai_compatible",
-            model="gpt-4o",
-        )
-    )
-    planner = CompositePlanner(llm_client=llm_client)
-
-    plan = await planner.plan(
-        TaskSpec(task="Open Safari, go to YouTube, and search for asmr")
-    )
-
-    assert plan["status"] == "unsupported_task"
-    assert plan["source"] == "llm"
-    assert plan["steps"] == []
-
-
-@pytest.mark.asyncio
-async def test_composite_planner_returns_unsupported_when_llm_provider_fails() -> None:
-    class FailingLLMClient:
+async def test_composite_planner_rejects_invalid_llm_action_kind() -> None:
+    class FakeLLMClient:
         async def complete(self, request):
-            raise ProviderError("endpoint failed")
+            class Response:
+                content = '{"steps": [{"kind": "explode", "params": {}}]}'
+
+            return Response()
 
         def complete_sync(self, request):
-            raise ProviderError("endpoint failed")
+            class Response:
+                content = '{"steps": [{"kind": "explode", "params": {}}]}'
 
-    planner = CompositePlanner(llm_client=FailingLLMClient())
+            return Response()
 
-    plan = await planner.plan(
-        TaskSpec(task="Open Safari, go to YouTube, and search for asmr")
+    planner = CompositePlanner(
+        rule_planner=UnsupportedPlanner(),
+        preplan_service=FakePreplanService(PreplanResult(planning_mode="direct")),
+        llm_client=FakeLLMClient(),
     )
 
-    assert plan["status"] == "unsupported_task"
-    assert plan["source"] == "llm"
-    assert plan["steps"] == []
+    plan = await planner.plan(TaskSpec(task="Do a complex thing"))
+
+    assert plan.status == "unsupported_task"
+    assert plan.source == "planner"
+    assert plan.steps == []
+
+
+@pytest.mark.asyncio
+async def test_composite_planner_preplan_failure_falls_back_only_for_rule_supported_task() -> (
+    None
+):
+    planner = CompositePlanner(
+        rule_planner=Planner(),
+        preplan_service=FakePreplanService(RuntimeError("preplan unavailable")),
+        planner_service=FakePlannerService(
+            PlanBundle(summary="unused", status="supported", source="planner")
+        ),
+    )
+
+    supported = await planner.plan(TaskSpec(task="Open Finder"))
+    unsupported = await planner.plan(TaskSpec(task="Research OpenAI pricing"))
+
+    assert supported.status == "supported"
+    assert supported.source == "rule"
+    assert unsupported.status == "unsupported_task"
+    assert unsupported.source == "preplan"
+
+
+def test_composite_planner_sync_rejects_invalid_planner_payload() -> None:
+    planner = CompositePlanner(
+        rule_planner=UnsupportedPlanner(),
+        preplan_service=FakePreplanService(PreplanResult(planning_mode="direct")),
+        planner_service=FakePlannerService(
+            {
+                "summary": "broken",
+                "status": "supported",
+                "source": "planner",
+                "steps": [{"allowed_actions": ["open_app"]}],
+            }
+        ),
+    )
+
+    plan = planner.plan_sync(TaskSpec(task="Do a complex thing"))
+
+    assert plan.status == "unsupported_task"
+    assert plan.source == "planner"
+    assert plan.steps == []

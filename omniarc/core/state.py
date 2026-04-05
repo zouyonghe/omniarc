@@ -9,7 +9,10 @@ from omniarc.core.models import (
     MemoryEntry,
     Observation,
     OmniArcModel,
+    PlanBundle,
+    PreplanResult,
     RecoveryDecision,
+    SearchArtifact,
     VerificationResult,
 )
 
@@ -27,8 +30,12 @@ class RunState(OmniArcModel):
     last_verification: VerificationResult | None = None
     last_recovery: RecoveryDecision | None = None
     memory: list[MemoryEntry] = Field(default_factory=list)
+    preplan_result: PreplanResult | None = None
+    plan_bundle: PlanBundle | None = None
+    search_artifacts: list[SearchArtifact] = Field(default_factory=list)
     is_done: bool = False
     action_retry_count: int = 0
+    replan_count: int = 0
     strategy_retry_count: int = 0
 
 

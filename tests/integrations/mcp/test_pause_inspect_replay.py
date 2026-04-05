@@ -51,13 +51,52 @@ def test_inspect_run_returns_status_task_checkpoint_and_artifacts(
         encoding="utf-8",
     )
     (run_paths.root / "checkpoint.json").write_text(
-        json.dumps({"current_step": 4, "status": "paused"}) + "\n",
+        json.dumps(
+            {
+                "current_step": 4,
+                "status": "paused",
+                "plan_step_index": 1,
+                "replan_count": 1,
+                "preplan_result": {"planning_mode": "search"},
+                "plan_bundle": {
+                    "summary": "Inspect me",
+                    "status": "supported",
+                    "source": "planner",
+                    "preplan": {"planning_mode": "search"},
+                    "steps": [
+                        {
+                            "goal": "Open browser",
+                            "completion_hint": "Browser is frontmost",
+                            "allowed_actions": ["open_app"],
+                            "fallback_hint": None,
+                            "planned_action": {
+                                "kind": "open_app",
+                                "params": {"name": "Safari"},
+                            },
+                        }
+                    ],
+                    "completion_criteria": [],
+                    "replan_triggers": [],
+                },
+                "search_artifacts": [],
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
     (run_paths.observations / "latest.png").write_bytes(b"\x89PNG\r\n")
     write_status(
         run_paths.root / "status.json",
-        {"job_id": "job-inspect", "status": "paused", "current_step": 4},
+        {
+            "job_id": "job-inspect",
+            "status": "paused",
+            "current_step": 4,
+            "planning": {
+                "plan_step_index": 1,
+                "replan_count": 1,
+                "preplan_result": {"planning_mode": "search"},
+            },
+        },
     )
 
     result = inspect_run("job-inspect", artifacts_dir=str(artifacts_dir))
@@ -65,12 +104,46 @@ def test_inspect_run_returns_status_task_checkpoint_and_artifacts(
     assert result["status"]["status"] == "paused"
     assert result["task"]["task"] == "Inspect me"
     assert result["checkpoint"]["current_step"] == 4
+    assert result["planning"]["plan_step_index"] == 1
+    assert result["planning"]["plan_bundle"]["steps"][0]["goal"] == "Open browser"
     assert "observations" in result["artifacts"]["entries"]
 
 
 def test_replay_run_reads_actions_and_memory_timeline(tmp_path: Path) -> None:
     artifacts_dir = tmp_path / ".omniarc"
     run_paths = ensure_run_paths(artifacts_dir, "job-replay")
+    (run_paths.root / "checkpoint.json").write_text(
+        json.dumps(
+            {
+                "plan_step_index": 1,
+                "replan_count": 0,
+                "preplan_result": {"planning_mode": "direct"},
+                "plan_bundle": {
+                    "summary": "Replay me",
+                    "status": "supported",
+                    "source": "planner",
+                    "preplan": {"planning_mode": "direct"},
+                    "steps": [
+                        {
+                            "goal": "Open Finder",
+                            "completion_hint": "Finder is frontmost",
+                            "allowed_actions": ["open_app"],
+                            "fallback_hint": None,
+                            "planned_action": {
+                                "kind": "open_app",
+                                "params": {"name": "Finder"},
+                            },
+                        }
+                    ],
+                    "completion_criteria": [],
+                    "replan_triggers": [],
+                },
+                "search_artifacts": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     append_jsonl(
         run_paths.root / "actions.jsonl", {"kind": "click", "params": {"x": 1, "y": 2}}
     )
@@ -87,3 +160,5 @@ def test_replay_run_reads_actions_and_memory_timeline(tmp_path: Path) -> None:
     assert result["actions"][0]["kind"] == "click"
     assert result["actions"][1]["kind"] == "done"
     assert result["memory"][0]["content"] == "step one"
+    assert result["planning"]["plan_step_index"] == 1
+    assert result["planning"]["plan_bundle"]["steps"][0]["goal"] == "Open Finder"
